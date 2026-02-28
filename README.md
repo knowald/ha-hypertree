@@ -1,6 +1,6 @@
 # HA Hypertree
 
-![HA Hypertree](icon.png)
+![HA Hypertree](public/icon.png)
 
 Interactive tree visualizations for your Home Assistant entity hierarchy.
 
@@ -10,13 +10,13 @@ Preview available at [hypertree.eightypercent.dev](https://hypertree.eightyperce
 
 HA Hypertree connects to a Home Assistant instance and renders its areas, devices, and entities as a navigable tree. Seven visualization modes are available:
 
-- **Force** -- Force-directed graph layout
-- **Dendrogram** -- Hierarchical cluster diagram
-- **Globe** -- Spherical projection
-- **Hyperbolic** -- Poincare disk with click-to-focus navigation
-- **Matrix** -- Adjacency matrix
-- **Sunburst** -- Radial arc layout
-- **Treemap** -- Rectangular partitioning with zoom
+- **Force** - Force-directed graph layout
+- **Dendrogram** - Hierarchical cluster diagram
+- **Globe** - Spherical projection
+- **Hyperbolic** - Poincare disk with click-to-focus navigation
+- **Matrix** - Adjacency matrix
+- **Sunburst** - Radial arc layout
+- **Treemap** - Rectangular partitioning with zoom
 
 Entity states update in real time over WebSocket.
 
