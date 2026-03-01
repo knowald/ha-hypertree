@@ -41,6 +41,7 @@ let clusters: Cluster[] = [];
 let entityNodeMap: Map<string, FNode> = new Map();
 let glowTimestamps: Map<FNode, number> = new Map();
 let width = 0, height = 0;
+let needsFit = false;
 let dragNode: FNode | null = null;
 let panning = false;
 let panStartX = 0, panStartY = 0;
@@ -48,14 +49,17 @@ let transform: ZoomTransform = createTransform();
 
 let showHulls = false;
 let showLabels = true;
+let showEntities = false;
 let groupBy: GroupMode = "area";
 let structureMode: StructureMode = "domain";
+let hiddenAreas: Set<string> = new Set();
 
 const REPULSION = 800;
 const SPRING_LEN = 40;
 const SPRING_K = 0.03;
 const DAMPING = 0.85;
 const ALPHA_DECAY = 0.998;
+const MAX_VELOCITY = 120;
 let alpha = 1;
 
 const ENTITY_LABEL_ZOOM = 2.5;
@@ -144,6 +148,7 @@ function rebuildWithStructure(): void {
 
   alpha = 1;
   buildGraph(root);
+  resize();
 }
 
 function createSettings(container: HTMLElement): HTMLDivElement {
@@ -153,6 +158,10 @@ function createSettings(container: HTMLElement): HTMLDivElement {
 
   panel.appendChild(makeToggle("Hulls", showHulls, (v) => { showHulls = v; }));
   panel.appendChild(makeToggle("Labels", showLabels, (v) => { showLabels = v; }));
+  panel.appendChild(makeToggle("Entities", showEntities, (v) => {
+    showEntities = v;
+    rebuildWithStructure();
+  }));
   panel.appendChild(makeSelect("Group", ["area", "domain"], groupBy, (v) => {
     groupBy = v as GroupMode;
     rebuildClusters();
@@ -162,7 +171,118 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     rebuildWithStructure();
   }));
 
+  if (currentRegistries && currentRegistries.areas.length > 0) {
+    panel.appendChild(makeAreaFilter(currentRegistries.areas));
+  }
+
   return panel;
+}
+
+function makeAreaFilter(areas: { area_id: string; name: string }[]): HTMLDivElement {
+  const wrapper = document.createElement("div");
+  wrapper.style.position = "relative";
+
+  const btn = document.createElement("button");
+  btn.className = "force-area-btn";
+  btn.style.cssText = `
+    background: var(--bg);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 0.1rem 0.5rem;
+    font-size: 0.7rem;
+    cursor: pointer;
+    outline: none;
+    white-space: nowrap;
+  `;
+  const updateBtnLabel = () => {
+    const hidden = hiddenAreas.size;
+    const total = areas.length;
+    btn.textContent = hidden === 0 ? `Areas (all)` : `Areas (${total - hidden}/${total})`;
+  };
+  updateBtnLabel();
+
+  const dropdown = document.createElement("div");
+  dropdown.style.cssText = `
+    display: none;
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 4px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 0;
+    min-width: 180px;
+    max-height: 50vh;
+    overflow-y: auto;
+    z-index: 400;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  `;
+
+  // Header row: "All" / "None" buttons
+  const header = document.createElement("div");
+  header.style.cssText = `display:flex; gap:4px; padding:2px 8px 6px 8px; border-bottom:1px solid var(--border); margin-bottom:2px;`;
+  const allBtn = document.createElement("button");
+  allBtn.textContent = "All";
+  allBtn.style.cssText = `font-size:0.65rem; padding:2px 8px; background:var(--bg); color:var(--text-muted); border:1px solid var(--border); border-radius:3px; cursor:pointer; flex:1;`;
+  allBtn.addEventListener("click", () => {
+    hiddenAreas.clear();
+    dropdown.querySelectorAll<HTMLInputElement>("input[type=checkbox]").forEach(cb => cb.checked = true);
+    updateBtnLabel();
+    rebuildWithStructure();
+  });
+  const noneBtn = document.createElement("button");
+  noneBtn.textContent = "None";
+  noneBtn.style.cssText = allBtn.style.cssText;
+  noneBtn.addEventListener("click", () => {
+    // Store with "area:" prefix to match tree node IDs (e.g. "area:woonkamer")
+    areas.forEach(a => hiddenAreas.add(`area:${a.area_id}`));
+    dropdown.querySelectorAll<HTMLInputElement>("input[type=checkbox]").forEach(cb => cb.checked = false);
+    updateBtnLabel();
+    rebuildWithStructure();
+  });
+  header.appendChild(allBtn);
+  header.appendChild(noneBtn);
+  dropdown.appendChild(header);
+
+  for (const area of areas) {
+    const item = document.createElement("label");
+    item.style.cssText = `display:flex; align-items:center; gap:6px; padding:3px 10px; font-size:0.72rem; color:var(--text); cursor:pointer;`;
+    item.addEventListener("mouseover", () => { item.style.background = "rgba(255,255,255,0.05)"; });
+    item.addEventListener("mouseout", () => { item.style.background = ""; });
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !hiddenAreas.has(area.area_id);
+    cb.style.accentColor = "var(--accent)";
+    cb.addEventListener("change", () => {
+      // Use "area:" prefix to match tree node IDs
+      if (cb.checked) {
+        hiddenAreas.delete(`area:${area.area_id}`);
+      } else {
+        hiddenAreas.add(`area:${area.area_id}`);
+      }
+      updateBtnLabel();
+      rebuildWithStructure();
+    });
+
+    item.appendChild(cb);
+    item.appendChild(document.createTextNode(area.name));
+    dropdown.appendChild(item);
+  }
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = dropdown.style.display === "block";
+    dropdown.style.display = open ? "none" : "block";
+  });
+
+  document.addEventListener("click", () => { dropdown.style.display = "none"; }, { capture: false });
+
+  wrapper.appendChild(btn);
+  wrapper.appendChild(dropdown);
+  return wrapper as unknown as HTMLDivElement;
 }
 
 function makeToggle(label: string, initial: boolean, onChange: (v: boolean) => void): HTMLLabelElement {
@@ -243,16 +363,47 @@ function rebuildClusters(): void {
 }
 
 function buildGraph(root: TreeNode): void {
-  const nodes = flatten(root);
+  const allNodes = flatten(root);
+
+  // Apply area filter
+  const areaFiltered = hiddenAreas.size > 0
+    ? allNodes.filter((n) => {
+        const area = findAncestor(n, "area");
+        // Keep node if: it has no area (root etc.), its area isn't hidden, or IT IS an area node that's not hidden
+        if (n.kind === "area") return !hiddenAreas.has(n.id);
+        return area === null || !hiddenAreas.has(area.id);
+      })
+    : allNodes;
+
+  const nodes = showEntities ? areaFiltered : areaFiltered.filter((n) => n.kind !== "entity");
   const map = new Map<TreeNode, FNode>();
 
+  // flatten() is pre-order DFS so parents always appear before children —
+  // we can safely use parent positions for initial placement.
   fnodes = nodes.map((n) => {
     const r = n.kind === "root" ? 10 : n.kind === "area" ? 8
       : (n.kind === "domain" || n.kind === "device") ? 6 : 3;
+
+    // Place each node near its parent to avoid large initial spring forces
+    const parentFn = n.parent ? map.get(n.parent) : null;
+    let jitter: number;
+    if (!parentFn) {
+      jitter = 0; // root at center
+    } else if (n.kind === "area") {
+      jitter = 200;
+    } else if (n.kind === "domain" || n.kind === "device") {
+      jitter = 100;
+    } else {
+      jitter = 50; // entity
+    }
+
+    const cx = parentFn ? parentFn.x : 600;
+    const cy = parentFn ? parentFn.y : 400;
+
     const fn: FNode = {
       tree: n,
-      x: Math.random() * 600 + 100,
-      y: Math.random() * 400 + 100,
+      x: cx + (Math.random() - 0.5) * jitter,
+      y: cy + (Math.random() - 0.5) * jitter,
       vx: 0, vy: 0,
       fx: null, fy: null,
       r,
@@ -278,6 +429,27 @@ function buildGraph(root: TreeNode): void {
 
   glowTimestamps = new Map();
   rebuildClusters();
+  needsFit = true;
+}
+
+function fitAll(): void {
+  if (!fnodes.length || !width || !height) return;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const n of fnodes) {
+    if (!isFinite(n.x) || !isFinite(n.y)) continue;
+    if (n.x < minX) minX = n.x;
+    if (n.y < minY) minY = n.y;
+    if (n.x > maxX) maxX = n.x;
+    if (n.y > maxY) maxY = n.y;
+  }
+  if (!isFinite(minX)) return;
+  const pad = 60;
+  const bw = maxX - minX + pad * 2;
+  const bh = maxY - minY + pad * 2;
+  const k = Math.min(width / bw, height / bh, 2);
+  transform.k = k;
+  transform.x = width / 2 - k * (minX + maxX) / 2;
+  transform.y = height / 2 - k * (minY + maxY) / 2;
 }
 
 function resize(): void {
@@ -287,6 +459,11 @@ function resize(): void {
   height = rect.height;
   canvas.width = width * devicePixelRatio;
   canvas.height = height * devicePixelRatio;
+  if (needsFit && width > 0 && height > 0) {
+    fitAll();
+    needsFit = false;
+    ensureLoop();
+  }
 }
 
 function tick(): void {
@@ -307,23 +484,40 @@ function tick(): void {
   }
 }
 
+const GRID_CELL = 200;
+
 function simulate(): void {
   const ra = REPULSION * alpha;
-  for (let i = 0; i < fnodes.length; i++) {
-    const a = fnodes[i];
-    for (let j = i + 1; j < fnodes.length; j++) {
-      const b = fnodes[j];
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      let d2 = dx * dx + dy * dy;
-      if (d2 < 1) d2 = 1;
-      const fd = ra / (d2 * Math.sqrt(d2));
-      const fx = dx * fd;
-      const fy = dy * fd;
-      a.vx -= fx;
-      a.vy -= fy;
-      b.vx += fx;
-      b.vy += fy;
+
+  // Spatial grid to limit repulsion to nearby nodes (O(n·k) instead of O(n²))
+  const grid = new Map<number, FNode[]>();
+  for (const n of fnodes) {
+    if (!isFinite(n.x) || !isFinite(n.y)) continue;
+    const key = Math.floor(n.x / GRID_CELL) * 1000003 + Math.floor(n.y / GRID_CELL);
+    let cell = grid.get(key);
+    if (!cell) { cell = []; grid.set(key, cell); }
+    cell.push(n);
+  }
+
+  for (const a of fnodes) {
+    if (!isFinite(a.x) || !isFinite(a.y)) continue;
+    const cx = Math.floor(a.x / GRID_CELL);
+    const cy = Math.floor(a.y / GRID_CELL);
+    for (let ddx = -1; ddx <= 1; ddx++) {
+      for (let ddy = -1; ddy <= 1; ddy++) {
+        const neighbors = grid.get((cx + ddx) * 1000003 + (cy + ddy));
+        if (!neighbors) continue;
+        for (const b of neighbors) {
+          if (b === a) continue;
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          let d2 = dx * dx + dy * dy;
+          if (d2 < 1) d2 = 1;
+          const fd = ra / (d2 * Math.sqrt(d2));
+          a.vx -= dx * fd;
+          a.vy -= dy * fd;
+        }
+      }
     }
   }
 
@@ -346,10 +540,35 @@ function simulate(): void {
   }
 
   for (const n of fnodes) {
-    if (n.fx !== null) { n.x = n.fx; n.vx = 0; }
-    else { n.vx *= DAMPING; n.x += n.vx; }
-    if (n.fy !== null) { n.y = n.fy; n.vy = 0; }
-    else { n.vy *= DAMPING; n.y += n.vy; }
+    // Recover from NaN/Infinity (shouldn't happen with clamping, but just in case)
+    if (!isFinite(n.x) || !isFinite(n.y) || !isFinite(n.vx) || !isFinite(n.vy)) {
+      n.x = width / 2 + (Math.random() - 0.5) * 100;
+      n.y = height / 2 + (Math.random() - 0.5) * 100;
+      n.vx = 0;
+      n.vy = 0;
+      continue;
+    }
+
+    if (n.fx !== null) {
+      n.x = n.fx;
+      n.vx = 0;
+    } else {
+      n.vx *= DAMPING;
+      // Clamp velocity to prevent runaway acceleration
+      if (n.vx > MAX_VELOCITY) n.vx = MAX_VELOCITY;
+      else if (n.vx < -MAX_VELOCITY) n.vx = -MAX_VELOCITY;
+      n.x += n.vx;
+    }
+
+    if (n.fy !== null) {
+      n.y = n.fy;
+      n.vy = 0;
+    } else {
+      n.vy *= DAMPING;
+      if (n.vy > MAX_VELOCITY) n.vy = MAX_VELOCITY;
+      else if (n.vy < -MAX_VELOCITY) n.vy = -MAX_VELOCITY;
+      n.y += n.vy;
+    }
   }
 }
 
@@ -535,6 +754,7 @@ function draw(): void {
   }
 
   for (const n of fnodes) {
+    if (!isFinite(n.x) || !isFinite(n.y)) continue;
     ctx.beginPath();
     ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
     ctx.fillStyle = color(n.tree);
