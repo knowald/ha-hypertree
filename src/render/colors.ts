@@ -1,4 +1,4 @@
-const DOMAIN_COLORS: Record<string, string> = {
+const DEFAULT_DOMAIN_COLORS: Record<string, string> = {
   light: "#ffca28",
   switch: "#66bb6a",
   sensor: "#42a5f5",
@@ -33,6 +33,8 @@ const DOMAIN_COLORS: Record<string, string> = {
   group: "#b0bec5",
 };
 
+const DOMAIN_COLORS: Record<string, string> = { ...DEFAULT_DOMAIN_COLORS };
+
 const KIND_COLORS: Record<string, string> = {
   root: "#e0e0e0",
   area: "#b0bec5",
@@ -47,4 +49,33 @@ export function nodeColor(kind: string, domain?: string): string {
     return (domain && DOMAIN_COLORS[domain]) ?? DEFAULT_COLOR;
   }
   return KIND_COLORS[kind] ?? DEFAULT_COLOR;
+}
+
+function randomHslColor(): string {
+  const h = Math.floor(Math.random() * 360);
+  const s = 50 + Math.floor(Math.random() * 40);
+  const l = 45 + Math.floor(Math.random() * 25);
+  const r = hslToHex(h, s, l);
+  return r;
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  s /= 100;
+  l /= 100;
+  const k = (n: number) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1))));
+  return `#${f(0).toString(16).padStart(2, "0")}${f(8).toString(16).padStart(2, "0")}${f(4).toString(16).padStart(2, "0")}`;
+}
+
+export function randomizeColors(): void {
+  for (const key of Object.keys(DOMAIN_COLORS)) {
+    DOMAIN_COLORS[key] = randomHslColor();
+  }
+}
+
+export function resetColors(): void {
+  for (const key of Object.keys(DEFAULT_DOMAIN_COLORS)) {
+    DOMAIN_COLORS[key] = DEFAULT_DOMAIN_COLORS[key];
+  }
 }

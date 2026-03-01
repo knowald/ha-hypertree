@@ -47,6 +47,10 @@ pnpm preview
 
 The built files in `dist/` can be served by any static file server.
 
+## Keyboard shortcuts
+
+- `` ` `` (backtick) - Toggle debug console
+
 ## Privacy
 
 This app is entirely client-side. Your browser connects directly to your Home Assistant instance via WebSocket. There is no backend, no analytics, and no telemetry.

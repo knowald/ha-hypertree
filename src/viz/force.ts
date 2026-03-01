@@ -2,8 +2,10 @@ import type { Visualization } from "./types";
 import type { TreeNode } from "../tree/types";
 import type { HaState, Registries } from "../ha/types";
 import { color, showTip, hideTip, flatten } from "./shared";
+import { randomizeColors, resetColors } from "../render/colors";
 import { createTransform, applyWheel, screenToWorld, type ZoomTransform } from "./zoom";
 import { buildTree, buildTreeByDevice } from "../tree/build";
+import { loadCredentials } from "../login";
 
 interface FNode {
   tree: TreeNode;
@@ -40,22 +42,110 @@ let fedges: FEdge[] = [];
 let clusters: Cluster[] = [];
 let entityNodeMap: Map<string, FNode> = new Map();
 let glowTimestamps: Map<FNode, number> = new Map();
+let nodeCluster: Map<FNode, Cluster> = new Map();
+let parentFNode: Map<FNode, FNode> = new Map();
+let childFNodes: Map<FNode, FNode[]> = new Map();
 let width = 0, height = 0;
 let dragNode: FNode | null = null;
 let panning = false;
 let panStartX = 0, panStartY = 0;
 let transform: ZoomTransform = createTransform();
 
-let showHulls = false;
-let showLabels = true;
-let groupBy: GroupMode = "area";
-let structureMode: StructureMode = "domain";
+const SETTINGS_KEY = "ha-hypertree-force-settings";
 
-const REPULSION = 800;
-const SPRING_LEN = 40;
-const SPRING_K = 0.03;
-const DAMPING = 0.85;
-const ALPHA_DECAY = 0.998;
+interface ForceSettings {
+  showHulls: boolean;
+  showLabels: boolean;
+  constellation: boolean;
+  groupBy: GroupMode;
+  structureMode: StructureMode;
+  starSize: number;
+  glowIntensity: number;
+  parentGlowIntensity: number;
+  effectScale: number;
+  twinkleSpeed: number;
+  lineGlow: number;
+  glowBrightness: number;
+  starEffect: StarEffect;
+  labelSize: number;
+  entityDotSize: number;
+  repulsion: number;
+  springLen: number;
+  springK: number;
+  damping: number;
+}
+
+type StarEffect = "supernova" | "shooting-star" | "flare" | "pulse-wave" | "color-shift";
+const defaults: ForceSettings = {
+  showHulls: false,
+  showLabels: true,
+  constellation: false,
+  groupBy: "area",
+  structureMode: "domain",
+  starSize: 1,
+  glowIntensity: 1,
+  parentGlowIntensity: 2,
+  effectScale: 2,
+  twinkleSpeed: 0.2,
+  lineGlow: 0.2,
+  glowBrightness: 1,
+  starEffect: "supernova",
+  labelSize: 10,
+  entityDotSize: 3,
+  repulsion: 800,
+  springLen: 40,
+  springK: 0.03,
+  damping: 0.85,
+};
+
+function loadSettings(): ForceSettings {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (raw) return { ...defaults, ...JSON.parse(raw) };
+  } catch { /* ignore */ }
+  return { ...defaults };
+}
+
+function saveSettings(): void {
+  const s: ForceSettings = {
+    showHulls, showLabels, constellation, groupBy, structureMode,
+    starSize, glowIntensity, twinkleSpeed, lineGlow, glowBrightness,
+    starEffect, parentGlowIntensity, effectScale,
+    labelSize, entityDotSize, repulsion, springLen, springK, damping,
+  };
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* ignore */ }
+}
+
+const saved = loadSettings();
+let showHulls = saved.showHulls;
+let showLabels = saved.showLabels;
+let constellation = saved.constellation;
+let groupBy: GroupMode = saved.groupBy;
+let structureMode: StructureMode = saved.structureMode;
+
+let starSize = saved.starSize;
+let glowIntensity = saved.glowIntensity;
+let parentGlowIntensity = saved.parentGlowIntensity;
+let effectScale = saved.effectScale;
+let twinkleSpeed = saved.twinkleSpeed;
+let lineGlow = saved.lineGlow;
+let glowBrightness = saved.glowBrightness;
+
+let starEffect: StarEffect = saved.starEffect;
+
+let labelSize = saved.labelSize;
+let entityDotSize = saved.entityDotSize;
+
+let hoveredNode: FNode | null = null;
+let searchQuery = "";
+let didDrag = false;
+let contextMenu: HTMLElement | null = null;
+
+let repulsion = saved.repulsion;
+let springLen = saved.springLen;
+let springK = saved.springK;
+let damping = saved.damping;
+let alphaDecay = 0.998;
 let alpha = 1;
 
 const ENTITY_LABEL_ZOOM = 2.5;
@@ -94,8 +184,9 @@ export function createForceViz(registries: Registries): Visualization {
       canvas.addEventListener("mousedown", onMouseDown);
       canvas.addEventListener("mousemove", onMouseMove);
       canvas.addEventListener("mouseup", onMouseUp);
-      canvas.addEventListener("mouseleave", () => { dragNode = null; panning = false; hideTip(); });
+      canvas.addEventListener("mouseleave", () => { dragNode = null; panning = false; hoveredNode = null; hideTip(); });
       canvas.addEventListener("wheel", onWheel, { passive: false });
+      canvas.addEventListener("contextmenu", onContextMenu);
 
       frame = requestAnimationFrame(tick);
     },
@@ -117,6 +208,7 @@ export function createForceViz(registries: Registries): Visualization {
       clusters = [];
       entityNodeMap = new Map();
       glowTimestamps = new Map();
+      dismissContextMenu();
       dragNode = null;
       panning = false;
     },
@@ -146,23 +238,162 @@ function rebuildWithStructure(): void {
   buildGraph(root);
 }
 
-function createSettings(container: HTMLElement): HTMLDivElement {
-  const panel = document.createElement("div");
-  panel.className = "force-settings";
-  container.appendChild(panel);
+function reheat(): void {
+  alpha = Math.max(alpha, 0.5);
+  ensureLoop();
+}
 
-  panel.appendChild(makeToggle("Hulls", showHulls, (v) => { showHulls = v; }));
-  panel.appendChild(makeToggle("Labels", showLabels, (v) => { showLabels = v; }));
-  panel.appendChild(makeSelect("Group", ["area", "domain"], groupBy, (v) => {
+function createSettings(container: HTMLElement): HTMLDivElement {
+  const wrapper = document.createElement("div");
+  wrapper.className = "force-settings";
+  container.appendChild(wrapper);
+
+  const toggleBtn = document.createElement("button");
+  toggleBtn.className = "force-settings-toggle";
+  toggleBtn.textContent = "\u2699";
+  toggleBtn.title = "Toggle settings";
+  wrapper.appendChild(toggleBtn);
+
+  const panel = document.createElement("div");
+  panel.className = "force-settings-body";
+  panel.hidden = true;
+  wrapper.appendChild(panel);
+
+  toggleBtn.addEventListener("click", () => {
+    panel.hidden = !panel.hidden;
+    wrapper.classList.toggle("force-settings-open", !panel.hidden);
+  });
+
+  const searchInput = document.createElement("input");
+  searchInput.type = "text";
+  searchInput.className = "force-search";
+  searchInput.placeholder = "Search entities...";
+  searchInput.addEventListener("input", () => {
+    searchQuery = searchInput.value.toLowerCase();
+    ensureLoop();
+  });
+  panel.appendChild(searchInput);
+
+  const toggles = document.createElement("div");
+  toggles.className = "force-toggles";
+  const hullGrouping = makeSelect("Hull grouping", ["area", "domain"], groupBy, (v) => {
     groupBy = v as GroupMode;
     rebuildClusters();
+    saveSettings();
+  });
+  hullGrouping.hidden = !showHulls;
+
+  toggles.appendChild(makeToggle("Hulls", showHulls, (v) => {
+    showHulls = v;
+    hullGrouping.hidden = !v;
+    saveSettings();
   }));
-  panel.appendChild(makeSelect("Structure", ["domain", "device"], structureMode, (v) => {
+  toggles.appendChild(makeToggle("Labels", showLabels, (v) => { showLabels = v; saveSettings(); }));
+  toggles.appendChild(makeToggle("Constellation", constellation, (v) => {
+    constellation = v;
+    starSliders.hidden = !v;
+    ensureLoop();
+    saveSettings();
+  }));
+  toggles.appendChild(makeSelect("Structure", ["domain", "device"], structureMode, (v) => {
     structureMode = v as StructureMode;
     rebuildWithStructure();
+    saveSettings();
   }));
+  toggles.appendChild(hullGrouping);
+  panel.appendChild(toggles);
 
-  return panel;
+  const forceSliders = document.createElement("div");
+  forceSliders.className = "force-sliders";
+  forceSliders.appendChild(makeSlider("Repulsion", 100, 3000, repulsion, 10, (v) => { repulsion = v; reheat(); saveSettings(); }));
+  forceSliders.appendChild(makeSlider("Spring length", 10, 120, springLen, 1, (v) => { springLen = v; reheat(); saveSettings(); }));
+  forceSliders.appendChild(makeSlider("Spring stiffness", 0.005, 0.15, springK, 0.005, (v) => { springK = v; reheat(); saveSettings(); }));
+  forceSliders.appendChild(makeSlider("Damping", 0.5, 0.99, damping, 0.01, (v) => { damping = v; reheat(); saveSettings(); }));
+  forceSliders.appendChild(makeSlider("Label size", 4, 24, labelSize, 1, (v) => { labelSize = v; saveSettings(); }));
+  forceSliders.appendChild(makeSlider("Entity dot size", 1, 16, entityDotSize, 0.5, (v) => {
+    entityDotSize = v;
+    for (const fn of fnodes) {
+      if (fn.tree.kind === "entity") fn.r = v;
+    }
+    saveSettings();
+  }));
+  panel.appendChild(forceSliders);
+
+  const starSliders = document.createElement("div");
+  starSliders.className = "force-sliders";
+  starSliders.hidden = !constellation;
+  starSliders.appendChild(makeSlider("Glow brightness", 0, 3, glowBrightness, 0.1, (v) => { glowBrightness = v; saveSettings(); }));
+  starSliders.appendChild(makeSlider("Star size", 0.2, 3, starSize, 0.1, (v) => { starSize = v; saveSettings(); }));
+  starSliders.appendChild(makeSlider("Glow intensity", 0.2, 3, glowIntensity, 0.1, (v) => { glowIntensity = v; saveSettings(); }));
+  starSliders.appendChild(makeSlider("Parent glow", 0.2, 5, parentGlowIntensity, 0.1, (v) => { parentGlowIntensity = v; saveSettings(); }));
+  starSliders.appendChild(makeSlider("Effect scale", 0.5, 5, effectScale, 0.1, (v) => { effectScale = v; saveSettings(); }));
+  starSliders.appendChild(makeSlider("Twinkle speed", 0, 5, twinkleSpeed, 0.1, (v) => { twinkleSpeed = v; saveSettings(); }));
+  starSliders.appendChild(makeSlider("Line glow", 0, 3, lineGlow, 0.1, (v) => { lineGlow = v; saveSettings(); }));
+  starSliders.appendChild(makeSelect("Effect",
+    ["supernova", "shooting-star", "flare", "pulse-wave", "color-shift"],
+    starEffect, (v) => { starEffect = v as StarEffect; saveSettings(); }));
+  panel.appendChild(starSliders);
+
+  const buttons = document.createElement("div");
+  buttons.className = "force-buttons";
+
+  const resetPosBtn = document.createElement("button");
+  resetPosBtn.className = "force-reset-btn";
+  resetPosBtn.textContent = "Reset positions";
+  resetPosBtn.addEventListener("click", () => {
+    transform = createTransform();
+    rebuildWithStructure();
+  });
+  buttons.appendChild(resetPosBtn);
+
+  const randomColorBtn = document.createElement("button");
+  randomColorBtn.className = "force-reset-btn";
+  randomColorBtn.textContent = "Randomize colors";
+  randomColorBtn.addEventListener("click", () => {
+    randomizeColors();
+    ensureLoop();
+  });
+  buttons.appendChild(randomColorBtn);
+
+  const resetAllBtn = document.createElement("button");
+  resetAllBtn.className = "force-reset-btn";
+  resetAllBtn.textContent = "Reset all settings";
+  resetAllBtn.addEventListener("click", () => {
+    resetColors();
+    Object.assign(saved, defaults);
+    showHulls = defaults.showHulls;
+    showLabels = defaults.showLabels;
+    constellation = defaults.constellation;
+    groupBy = defaults.groupBy;
+    structureMode = defaults.structureMode;
+    starSize = defaults.starSize;
+    glowIntensity = defaults.glowIntensity;
+    parentGlowIntensity = defaults.parentGlowIntensity;
+    effectScale = defaults.effectScale;
+    twinkleSpeed = defaults.twinkleSpeed;
+    lineGlow = defaults.lineGlow;
+    glowBrightness = defaults.glowBrightness;
+    starEffect = defaults.starEffect;
+    labelSize = defaults.labelSize;
+    entityDotSize = defaults.entityDotSize;
+    repulsion = defaults.repulsion;
+    springLen = defaults.springLen;
+    springK = defaults.springK;
+    damping = defaults.damping;
+    searchQuery = "";
+    transform = createTransform();
+    saveSettings();
+    // Rebuild panel to reflect reset values
+    const container = wrapper.parentElement!;
+    wrapper.remove();
+    settingsPanel = createSettings(container);
+    rebuildWithStructure();
+  });
+  buttons.appendChild(resetAllBtn);
+
+  panel.appendChild(buttons);
+
+  return wrapper;
 }
 
 function makeToggle(label: string, initial: boolean, onChange: (v: boolean) => void): HTMLLabelElement {
@@ -192,6 +423,33 @@ function makeSelect(label: string, options: string[], initial: string, onChange:
   }
   select.addEventListener("change", () => onChange(select.value));
   el.appendChild(select);
+  return el;
+}
+
+function makeSlider(
+  label: string, min: number, max: number, initial: number, step: number,
+  onChange: (v: number) => void
+): HTMLLabelElement {
+  const el = document.createElement("label");
+  el.className = "force-slider-label";
+  const nameSpan = document.createElement("span");
+  nameSpan.textContent = label;
+  const valueSpan = document.createElement("span");
+  valueSpan.className = "force-slider-value";
+  valueSpan.textContent = String(initial);
+  const input = document.createElement("input");
+  input.type = "range";
+  input.min = String(min);
+  input.max = String(max);
+  input.step = String(step);
+  input.value = String(initial);
+  input.className = "force-slider";
+  input.addEventListener("input", () => {
+    const v = Number(input.value);
+    valueSpan.textContent = step < 0.1 ? v.toFixed(3) : String(v);
+    onChange(v);
+  });
+  el.append(nameSpan, input, valueSpan);
   return el;
 }
 
@@ -240,6 +498,13 @@ function rebuildClusters(): void {
   }
 
   clusters = Array.from(clusterMap.values()).filter((c) => c.nodes.length >= 3);
+
+  nodeCluster = new Map();
+  for (const cluster of clusters) {
+    for (const fn of cluster.nodes) {
+      nodeCluster.set(fn, cluster);
+    }
+  }
 }
 
 function buildGraph(root: TreeNode): void {
@@ -248,7 +513,7 @@ function buildGraph(root: TreeNode): void {
 
   fnodes = nodes.map((n) => {
     const r = n.kind === "root" ? 10 : n.kind === "area" ? 8
-      : (n.kind === "domain" || n.kind === "device") ? 6 : 3;
+      : (n.kind === "domain" || n.kind === "device") ? 6 : entityDotSize;
     const fn: FNode = {
       tree: n,
       x: Math.random() * 600 + 100,
@@ -262,11 +527,18 @@ function buildGraph(root: TreeNode): void {
   });
 
   fedges = [];
+  parentFNode = new Map();
+  childFNodes = new Map();
+  for (const fn of fnodes) childFNodes.set(fn, []);
   for (const n of nodes) {
     if (!n.parent) continue;
     const source = map.get(n.parent);
     const target = map.get(n);
-    if (source && target) fedges.push({ source, target });
+    if (source && target) {
+      fedges.push({ source, target });
+      parentFNode.set(target, source);
+      childFNodes.get(source)!.push(target);
+    }
   }
 
   entityNodeMap = new Map();
@@ -294,12 +566,12 @@ function tick(): void {
 
   if (alpha > 0.001) {
     simulate();
-    alpha *= ALPHA_DECAY;
+    alpha *= alphaDecay;
   }
 
   draw();
 
-  const needsAnimation = alpha > 0.001 || glowTimestamps.size > 0 || dragNode !== null || panning;
+  const needsAnimation = alpha > 0.001 || glowTimestamps.size > 0 || dragNode !== null || panning || constellation;
   if (needsAnimation) {
     frame = requestAnimationFrame(tick);
   } else {
@@ -308,7 +580,7 @@ function tick(): void {
 }
 
 function simulate(): void {
-  const ra = REPULSION * alpha;
+  const ra = repulsion * alpha;
   for (let i = 0; i < fnodes.length; i++) {
     const a = fnodes[i];
     for (let j = i + 1; j < fnodes.length; j++) {
@@ -331,7 +603,7 @@ function simulate(): void {
     const dx = edge.target.x - edge.source.x;
     const dy = edge.target.y - edge.source.y;
     const d = Math.sqrt(dx * dx + dy * dy) || 1;
-    const f = (d - SPRING_LEN) * SPRING_K * alpha;
+    const f = (d - springLen) * springK * alpha;
     const fx = (dx / d) * f;
     const fy = (dy / d) * f;
     edge.source.vx += fx;
@@ -347,9 +619,9 @@ function simulate(): void {
 
   for (const n of fnodes) {
     if (n.fx !== null) { n.x = n.fx; n.vx = 0; }
-    else { n.vx *= DAMPING; n.x += n.vx; }
+    else { n.vx *= damping; n.x += n.vx; }
     if (n.fy !== null) { n.y = n.fy; n.vy = 0; }
-    else { n.vy *= DAMPING; n.y += n.vy; }
+    else { n.vy *= damping; n.y += n.vy; }
   }
 }
 
@@ -433,7 +705,7 @@ function drawHull(ctx: CanvasRenderingContext2D, cluster: Cluster): void {
 }
 
 function drawLabels(ctx: CanvasRenderingContext2D): void {
-  const fontSize = 10 / transform.k;
+  const fontSize = labelSize / transform.k;
   ctx.font = `${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
@@ -459,6 +731,69 @@ function drawLabels(ctx: CanvasRenderingContext2D): void {
   ctx.globalAlpha = 1;
 }
 
+function transparent(hex: string): string {
+  return hex + "00";
+}
+
+function matchesSearch(fn: FNode): boolean {
+  if (!searchQuery) return false;
+  const label = fn.tree.label.toLowerCase();
+  const id = (fn.tree.entityId ?? fn.tree.id).toLowerCase();
+  return label.includes(searchQuery) || id.includes(searchQuery);
+}
+
+function drawSearchHighlights(ctx: CanvasRenderingContext2D): void {
+  if (!searchQuery) return;
+
+  for (const fn of fnodes) {
+    if (!matchesSearch(fn)) continue;
+
+    const nodeCol = color(fn.tree);
+    const highlightR = fn.r * 3;
+
+    const glow = ctx.createRadialGradient(fn.x, fn.y, fn.r, fn.x, fn.y, highlightR);
+    glow.addColorStop(0, nodeCol);
+    glow.addColorStop(1, transparent(nodeCol));
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(fn.x, fn.y, highlightR, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(fn.x, fn.y, fn.r + 2 / transform.k, 0, Math.PI * 2);
+    ctx.strokeStyle = "#fff";
+    ctx.globalAlpha = 0.9;
+    ctx.lineWidth = 2 / transform.k;
+    ctx.stroke();
+  }
+
+  ctx.globalAlpha = 1;
+}
+
+function drawHoverHighlight(ctx: CanvasRenderingContext2D, fn: FNode): void {
+  const nodeCol = color(fn.tree);
+  const haloR = fn.r * 2.5;
+
+  const glow = ctx.createRadialGradient(fn.x, fn.y, fn.r, fn.x, fn.y, haloR);
+  glow.addColorStop(0, nodeCol);
+  glow.addColorStop(1, transparent(nodeCol));
+  ctx.globalAlpha = 0.4;
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(fn.x, fn.y, haloR, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(fn.x, fn.y, fn.r + 1.5 / transform.k, 0, Math.PI * 2);
+  ctx.strokeStyle = "#fff";
+  ctx.globalAlpha = 0.7;
+  ctx.lineWidth = 1.5 / transform.k;
+  ctx.stroke();
+
+  ctx.globalAlpha = 1;
+}
+
 function drawGlows(ctx: CanvasRenderingContext2D): void {
   const now = performance.now();
   const expired: FNode[] = [];
@@ -479,13 +814,13 @@ function drawGlows(ctx: CanvasRenderingContext2D): void {
     ctx.beginPath();
     ctx.arc(fn.x, fn.y, ringRadius, 0, Math.PI * 2);
     ctx.fillStyle = nodeColor;
-    ctx.globalAlpha = opacity * 0.2;
+    ctx.globalAlpha = opacity * 0.2 * glowBrightness;
     ctx.fill();
 
     ctx.beginPath();
     ctx.arc(fn.x, fn.y, ringRadius, 0, Math.PI * 2);
     ctx.strokeStyle = nodeColor;
-    ctx.globalAlpha = opacity * 0.9;
+    ctx.globalAlpha = opacity * 0.9 * glowBrightness;
     ctx.lineWidth = (3 + 4 * (1 - progress)) / transform.k;
     ctx.stroke();
 
@@ -494,7 +829,7 @@ function drawGlows(ctx: CanvasRenderingContext2D): void {
       ctx.beginPath();
       ctx.arc(fn.x, fn.y, fn.r * 2.5, 0, Math.PI * 2);
       ctx.fillStyle = "#fff";
-      ctx.globalAlpha = flashOpacity * 0.5;
+      ctx.globalAlpha = flashOpacity * 0.5 * glowBrightness;
       ctx.fill();
     }
 
@@ -504,6 +839,440 @@ function drawGlows(ctx: CanvasRenderingContext2D): void {
   for (const fn of expired) {
     glowTimestamps.delete(fn);
   }
+}
+
+function drawGlowLine(
+  ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number,
+  lineColor: string, alpha: number, width: number
+): void {
+  ctx.globalAlpha = alpha * 0.15 * lineGlow;
+  ctx.strokeStyle = lineColor;
+  ctx.lineWidth = width * 6;
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+
+  ctx.globalAlpha = alpha * 0.4 * lineGlow;
+  ctx.lineWidth = width * 2.5;
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+
+  ctx.globalAlpha = alpha * 0.9 * lineGlow;
+  ctx.lineWidth = width;
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+}
+
+function drawConstellation(ctx: CanvasRenderingContext2D, now: number): void {
+  const invK = 1 / transform.k;
+
+  for (const e of fedges) {
+    const sc = nodeCluster.get(e.source);
+    const tc = nodeCluster.get(e.target);
+    if (sc && sc === tc) {
+      drawGlowLine(ctx, e.source.x, e.source.y, e.target.x, e.target.y,
+        color(sc.groupNode), 0.25, 0.5 * invK);
+    } else if (e.source.tree.kind !== "entity" && e.target.tree.kind !== "entity") {
+      const edgeCol = color(e.source.tree);
+      drawGlowLine(ctx, e.source.x, e.source.y, e.target.x, e.target.y,
+        edgeCol, 0.35, 0.6 * invK);
+    }
+  }
+
+  if (clusters.length > 1) {
+    const centroids: { x: number; y: number; c: Cluster }[] = [];
+    for (const cluster of clusters) {
+      let cx = 0, cy = 0;
+      for (const fn of cluster.nodes) { cx += fn.x; cy += fn.y; }
+      cx /= cluster.nodes.length;
+      cy /= cluster.nodes.length;
+      centroids.push({ x: cx, y: cy, c: cluster });
+    }
+
+    ctx.setLineDash([4 * invK, 6 * invK]);
+    for (let i = 0; i < centroids.length; i++) {
+      const a = centroids[i];
+      let closestDist = Infinity;
+      let closestIdx = -1;
+      for (let j = 0; j < centroids.length; j++) {
+        if (i === j) continue;
+        const dx = a.x - centroids[j].x;
+        const dy = a.y - centroids[j].y;
+        const d = dx * dx + dy * dy;
+        if (d < closestDist) { closestDist = d; closestIdx = j; }
+      }
+      if (closestIdx > i) {
+        drawGlowLine(ctx, a.x, a.y, centroids[closestIdx].x, centroids[closestIdx].y,
+          "#88aacc", 0.4, 0.4 * invK);
+      }
+    }
+    ctx.setLineDash([]);
+  }
+
+  const starScale = starSize / Math.sqrt(transform.k);
+
+  function drawStar(fn: FNode): void {
+    const phase = fn.x * 0.1 + fn.y * 0.07;
+    const twinkle = twinkleSpeed === 0 ? 1 : 0.5 + 0.5 * Math.sin(now * 0.003 * twinkleSpeed + phase);
+    const pulse = twinkle * twinkle;
+    const baseAlpha = fn.tree.kind === "entity" ? 0.5 : 0.9;
+    const starAlpha = Math.min(1, baseAlpha * (0.15 + 0.85 * pulse) * glowBrightness);
+
+    const nodeCol = color(fn.tree);
+    const starR = (fn.tree.kind === "entity" ? 5 : fn.tree.kind === "root" ? 14 : 9) * starScale;
+    const haloR = starR * 8 * glowIntensity;
+
+    const outerGlow = ctx.createRadialGradient(fn.x, fn.y, 0, fn.x, fn.y, haloR);
+    outerGlow.addColorStop(0, nodeCol);
+    outerGlow.addColorStop(0.25, nodeCol);
+    outerGlow.addColorStop(1, transparent(nodeCol));
+    ctx.globalAlpha = Math.min(1, starAlpha * 0.6 * glowIntensity);
+    ctx.fillStyle = outerGlow;
+    ctx.beginPath();
+    ctx.arc(fn.x, fn.y, haloR, 0, Math.PI * 2);
+    ctx.fill();
+
+    const innerGlow = ctx.createRadialGradient(fn.x, fn.y, 0, fn.x, fn.y, starR * 3 * glowIntensity);
+    innerGlow.addColorStop(0, "#fff");
+    innerGlow.addColorStop(0.3, nodeCol);
+    innerGlow.addColorStop(1, transparent(nodeCol));
+    ctx.globalAlpha = Math.min(1, starAlpha * 0.8 * glowIntensity);
+    ctx.fillStyle = innerGlow;
+    ctx.beginPath();
+    ctx.arc(fn.x, fn.y, starR * 3 * glowIntensity, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.globalAlpha = starAlpha;
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.arc(fn.x, fn.y, starR * 0.6, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = nodeCol;
+    ctx.globalAlpha = starAlpha * 0.6;
+    ctx.lineWidth = 0.5 * starScale;
+    const spikeLen = starR * 3;
+    ctx.beginPath();
+    ctx.moveTo(fn.x - spikeLen, fn.y);
+    ctx.lineTo(fn.x + spikeLen, fn.y);
+    ctx.moveTo(fn.x, fn.y - spikeLen);
+    ctx.lineTo(fn.x, fn.y + spikeLen);
+    ctx.stroke();
+  }
+
+  for (const fn of fnodes) {
+    if (fn.tree.kind === "entity") drawStar(fn);
+  }
+
+  ctx.globalAlpha = 1;
+}
+
+function drawConstellationParents(ctx: CanvasRenderingContext2D, now: number): void {
+  const starScale = starSize / Math.sqrt(transform.k);
+
+  for (const fn of fnodes) {
+    if (fn.tree.kind === "entity") continue;
+
+    const phase = fn.x * 0.1 + fn.y * 0.07;
+    const twinkle = twinkleSpeed === 0 ? 1 : 0.5 + 0.5 * Math.sin(now * 0.003 * twinkleSpeed + phase);
+    const pulse = twinkle * twinkle;
+    const starAlpha = Math.min(1, 0.9 * (0.15 + 0.85 * pulse) * glowBrightness);
+
+    const nodeCol = color(fn.tree);
+    const starR = (fn.tree.kind === "root" ? 14 : 9) * starScale;
+    const pgi = parentGlowIntensity;
+    const haloR = starR * 8 * pgi;
+
+    const outerGlow = ctx.createRadialGradient(fn.x, fn.y, 0, fn.x, fn.y, haloR);
+    outerGlow.addColorStop(0, nodeCol);
+    outerGlow.addColorStop(0.25, nodeCol);
+    outerGlow.addColorStop(1, transparent(nodeCol));
+    ctx.globalAlpha = Math.min(1, starAlpha * 0.6 * pgi);
+    ctx.fillStyle = outerGlow;
+    ctx.beginPath();
+    ctx.arc(fn.x, fn.y, haloR, 0, Math.PI * 2);
+    ctx.fill();
+
+    const innerGlow = ctx.createRadialGradient(fn.x, fn.y, 0, fn.x, fn.y, starR * 3 * pgi);
+    innerGlow.addColorStop(0, "#fff");
+    innerGlow.addColorStop(0.3, nodeCol);
+    innerGlow.addColorStop(1, transparent(nodeCol));
+    ctx.globalAlpha = Math.min(1, starAlpha * 0.8 * pgi);
+    ctx.fillStyle = innerGlow;
+    ctx.beginPath();
+    ctx.arc(fn.x, fn.y, starR * 3 * pgi, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.globalAlpha = starAlpha;
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.arc(fn.x, fn.y, starR * 0.6, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = nodeCol;
+    ctx.globalAlpha = starAlpha * 0.6;
+    ctx.lineWidth = 0.5 * starScale;
+    const spikeLen = starR * 3;
+    ctx.beginPath();
+    ctx.moveTo(fn.x - spikeLen, fn.y);
+    ctx.lineTo(fn.x + spikeLen, fn.y);
+    ctx.moveTo(fn.x, fn.y - spikeLen);
+    ctx.lineTo(fn.x, fn.y + spikeLen);
+    ctx.stroke();
+  }
+
+  ctx.globalAlpha = 1;
+}
+
+function drawStarEffects(ctx: CanvasRenderingContext2D, now: number): void {
+  const expired: FNode[] = [];
+  const ss = starSize * effectScale / Math.sqrt(transform.k);
+
+  for (const [fn, startTime] of glowTimestamps) {
+    const elapsed = now - startTime;
+    if (elapsed > GLOW_DURATION) {
+      expired.push(fn);
+      continue;
+    }
+    const t = elapsed / GLOW_DURATION;
+    const nodeCol = color(fn.tree);
+
+    switch (starEffect) {
+      case "supernova":
+        drawSupernova(ctx, fn, t, nodeCol, ss);
+        break;
+      case "shooting-star":
+        drawShootingStar(ctx, fn, t, nodeCol, ss);
+        break;
+      case "flare":
+        drawFlare(ctx, fn, t, nodeCol, ss, now);
+        break;
+      case "pulse-wave":
+        drawPulseWave(ctx, fn, t, nodeCol, ss);
+        break;
+      case "color-shift":
+        drawColorShift(ctx, fn, t, ss);
+        break;
+    }
+  }
+
+  for (const fn of expired) glowTimestamps.delete(fn);
+  ctx.globalAlpha = 1;
+}
+
+function drawSupernova(ctx: CanvasRenderingContext2D, fn: FNode, t: number, nodeCol: string, ss: number): void {
+  const ease = 1 - (1 - t) * (1 - t);
+  const blastR = ss * 80 * ease * glowIntensity;
+  const opacity = (1 - t);
+  const gb = glowBrightness;
+
+  const blast = ctx.createRadialGradient(fn.x, fn.y, 0, fn.x, fn.y, blastR);
+  blast.addColorStop(0, "#fff");
+  blast.addColorStop(0.15, nodeCol);
+  blast.addColorStop(1, transparent(nodeCol));
+  ctx.globalAlpha = opacity * 0.6 * gb;
+  ctx.fillStyle = blast;
+  ctx.beginPath();
+  ctx.arc(fn.x, fn.y, blastR, 0, Math.PI * 2);
+  ctx.fill();
+
+  if (t < 0.3) {
+    const flashAlpha = 1 - t / 0.3;
+    ctx.globalAlpha = flashAlpha * 0.9 * gb;
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.arc(fn.x, fn.y, ss * 12 * (1 - t), 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  for (const other of fnodes) {
+    if (other === fn) continue;
+    const dx = other.x - fn.x;
+    const dy = other.y - fn.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < blastR) {
+      const proximity = 1 - dist / blastR;
+      ctx.globalAlpha = proximity * opacity * 0.4 * gb;
+      ctx.fillStyle = "#fff";
+      ctx.beginPath();
+      ctx.arc(other.x, other.y, ss * 4 * proximity, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+function drawShootingStar(ctx: CanvasRenderingContext2D, fn: FNode, t: number, nodeCol: string, ss: number): void {
+  const parent = parentFNode.get(fn);
+  if (!parent) return;
+
+  const headT = Math.min(t * 2, 1);
+  const ease = 1 - (1 - headT) * (1 - headT);
+  const hx = fn.x + (parent.x - fn.x) * ease;
+  const hy = fn.y + (parent.y - fn.y) * ease;
+
+  const trailLen = 8;
+  for (let i = 0; i < trailLen; i++) {
+    const trailT = Math.max(0, ease - i * 0.04);
+    const tx = fn.x + (parent.x - fn.x) * trailT;
+    const ty = fn.y + (parent.y - fn.y) * trailT;
+    const fade = (1 - i / trailLen) * (1 - t);
+    const r = ss * (3 - i * 0.3);
+
+    ctx.globalAlpha = fade * 0.7 * glowBrightness;
+    ctx.fillStyle = i === 0 ? "#fff" : nodeCol;
+    ctx.beginPath();
+    ctx.arc(tx, ty, Math.max(r, ss * 0.5), 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const headGlow = ctx.createRadialGradient(hx, hy, 0, hx, hy, ss * 10);
+  headGlow.addColorStop(0, "#fff");
+  headGlow.addColorStop(0.3, nodeCol);
+  headGlow.addColorStop(1, transparent(nodeCol));
+  ctx.globalAlpha = (1 - t) * 0.6 * glowBrightness;
+  ctx.fillStyle = headGlow;
+  ctx.beginPath();
+  ctx.arc(hx, hy, ss * 10, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawFlare(ctx: CanvasRenderingContext2D, fn: FNode, t: number, nodeCol: string, ss: number, now: number): void {
+  const intensity = t < 0.15 ? t / 0.15 : 1 - (t - 0.15) / 0.85;
+  const rotation = now * 0.001;
+  const spikeLen = ss * (5 + 45 * intensity * glowIntensity);
+  const spikeCount = 4;
+
+  const coreGlow = ctx.createRadialGradient(fn.x, fn.y, 0, fn.x, fn.y, ss * 8 * intensity);
+  coreGlow.addColorStop(0, "#fff");
+  coreGlow.addColorStop(0.5, nodeCol);
+  coreGlow.addColorStop(1, transparent(nodeCol));
+  ctx.globalAlpha = intensity * 0.7 * glowBrightness;
+  ctx.fillStyle = coreGlow;
+  ctx.beginPath();
+  ctx.arc(fn.x, fn.y, ss * 8 * intensity, 0, Math.PI * 2);
+  ctx.fill();
+
+  for (let i = 0; i < spikeCount; i++) {
+    const angle = rotation + (i * Math.PI) / spikeCount;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+
+    const grad = ctx.createLinearGradient(
+      fn.x - cos * spikeLen, fn.y - sin * spikeLen,
+      fn.x + cos * spikeLen, fn.y + sin * spikeLen
+    );
+    grad.addColorStop(0, transparent(nodeCol));
+    grad.addColorStop(0.4, nodeCol);
+    grad.addColorStop(0.5, "#fff");
+    grad.addColorStop(0.6, nodeCol);
+    grad.addColorStop(1, transparent(nodeCol));
+
+    ctx.globalAlpha = intensity * 0.6 * glowBrightness;
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = ss * (1 + 2 * intensity);
+    ctx.beginPath();
+    ctx.moveTo(fn.x - cos * spikeLen, fn.y - sin * spikeLen);
+    ctx.lineTo(fn.x + cos * spikeLen, fn.y + sin * spikeLen);
+    ctx.stroke();
+  }
+}
+
+function drawPulseWave(ctx: CanvasRenderingContext2D, fn: FNode, t: number, nodeCol: string, ss: number): void {
+  const waveFront = t * 6;
+  const visited = new Map<FNode, number>();
+  const queue: { node: FNode; depth: number }[] = [{ node: fn, depth: 0 }];
+  visited.set(fn, 0);
+
+  while (queue.length > 0) {
+    const { node, depth } = queue.shift()!;
+    if (depth > 5) continue;
+
+    const children = childFNodes.get(node) ?? [];
+    const parent = parentFNode.get(node);
+    const neighbors = [...children];
+    if (parent) neighbors.push(parent);
+
+    for (const nb of neighbors) {
+      if (visited.has(nb)) continue;
+      visited.set(nb, depth + 1);
+      queue.push({ node: nb, depth: depth + 1 });
+    }
+  }
+
+  for (const [node, depth] of visited) {
+    const waveHit = depth / waveFront;
+    if (waveHit > 1) continue;
+    const fadeIn = Math.max(0, 1 - Math.abs(waveHit - 0.5) * 2);
+    const fade = fadeIn * (1 - t);
+
+    ctx.globalAlpha = fade * 0.8 * glowBrightness;
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, ss * (3 + 5 * fadeIn), 0, Math.PI * 2);
+    ctx.fill();
+
+    const glow = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, ss * 12 * fadeIn);
+    glow.addColorStop(0, nodeCol);
+    glow.addColorStop(1, transparent(nodeCol));
+    ctx.globalAlpha = fade * 0.4 * glowBrightness;
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, ss * 12 * fadeIn, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  for (const e of fedges) {
+    const sd = visited.get(e.source);
+    const td = visited.get(e.target);
+    if (sd === undefined || td === undefined) continue;
+    const edgeDepth = Math.min(sd, td);
+    const waveHit = edgeDepth / waveFront;
+    if (waveHit > 1) continue;
+    const fadeIn = Math.max(0, 1 - Math.abs(waveHit - 0.5) * 2);
+    const fade = fadeIn * (1 - t);
+
+    ctx.globalAlpha = fade * 0.7 * glowBrightness;
+    ctx.strokeStyle = nodeCol;
+    ctx.lineWidth = ss * (1 + 3 * fadeIn);
+    ctx.beginPath();
+    ctx.moveTo(e.source.x, e.source.y);
+    ctx.lineTo(e.target.x, e.target.y);
+    ctx.stroke();
+  }
+}
+
+function drawColorShift(ctx: CanvasRenderingContext2D, fn: FNode, t: number, ss: number): void {
+  const hue = t < 0.3
+    ? 60 - t / 0.3 * 60
+    : t < 0.6
+      ? 240 * ((t - 0.3) / 0.3)
+      : 240 - (t - 0.6) / 0.4 * 240;
+  const sat = t < 0.2 ? 0 : Math.min(100, (t - 0.2) * 200);
+  const light = t < 0.15 ? 95 - t / 0.15 * 30 : 65;
+  const shiftColor = `hsl(${hue}, ${sat}%, ${light}%)`;
+  const shiftTransparent = `hsla(${hue}, ${sat}%, ${light}%, 0)`;
+  const fade = 1 - t * t;
+
+  const glow = ctx.createRadialGradient(fn.x, fn.y, 0, fn.x, fn.y, ss * 20 * glowIntensity);
+  glow.addColorStop(0, shiftColor);
+  glow.addColorStop(0.3, shiftColor);
+  glow.addColorStop(1, shiftTransparent);
+  ctx.globalAlpha = fade * 0.7 * glowBrightness;
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(fn.x, fn.y, ss * 20 * glowIntensity, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.globalAlpha = fade * glowBrightness;
+  ctx.fillStyle = t < 0.15 ? "#fff" : shiftColor;
+  ctx.beginPath();
+  ctx.arc(fn.x, fn.y, ss * 3, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 function draw(): void {
@@ -518,6 +1287,16 @@ function draw(): void {
     0, dpr * transform.k,
     dpr * transform.x, dpr * transform.y
   );
+
+  if (constellation) {
+    const now = performance.now();
+    drawConstellation(ctx, now);
+    drawStarEffects(ctx, now);
+    drawConstellationParents(ctx, now);
+    drawSearchHighlights(ctx);
+    if (showLabels) drawLabels(ctx);
+    return;
+  }
 
   if (showHulls) {
     for (const cluster of clusters) {
@@ -541,6 +1320,11 @@ function draw(): void {
     ctx.fill();
   }
 
+  if (hoveredNode) {
+    drawHoverHighlight(ctx, hoveredNode);
+  }
+
+  drawSearchHighlights(ctx);
   drawGlows(ctx);
 
   if (showLabels) {
@@ -573,6 +1357,8 @@ function onWheel(e: WheelEvent): void {
 }
 
 function onMouseDown(e: MouseEvent): void {
+  dismissContextMenu();
+  didDrag = false;
   const n = hitTest(e.offsetX, e.offsetY);
   if (n) {
     dragNode = n;
@@ -589,6 +1375,7 @@ function onMouseDown(e: MouseEvent): void {
 
 function onMouseMove(e: MouseEvent): void {
   if (dragNode) {
+    didDrag = true;
     const world = screenToWorld(transform, e.offsetX, e.offsetY);
     dragNode.fx = world.x;
     dragNode.fy = world.y;
@@ -600,15 +1387,131 @@ function onMouseMove(e: MouseEvent): void {
     panStartY = e.clientY;
   }
   const n = hitTest(e.offsetX, e.offsetY);
-  if (n) showTip(e.clientX, e.clientY, n.tree, currentStates);
-  else hideTip();
+  const changed = hoveredNode !== n;
+  hoveredNode = n;
+  if (n) {
+    showTip(e.clientX, e.clientY, n.tree, currentStates);
+    if (canvas) canvas.style.cursor = "pointer";
+  } else {
+    hideTip();
+    if (canvas) canvas.style.cursor = panning ? "grabbing" : "grab";
+  }
+  if (changed) ensureLoop();
 }
 
 function onMouseUp(): void {
   if (dragNode) {
+    if (!didDrag) {
+      performClickAction(dragNode.tree);
+    }
     dragNode.fx = null;
     dragNode.fy = null;
     dragNode = null;
   }
   panning = false;
+}
+
+function getHaUrl(): string {
+  const creds = loadCredentials();
+  return creds?.url?.replace(/\/+$/, "") ?? "";
+}
+
+function nodeActionId(node: TreeNode): string | null {
+  if (node.entityId) return node.entityId;
+  if (node.kind === "area") return node.id.replace(/^area:/, "");
+  return null;
+}
+
+function performClickAction(node: TreeNode): void {
+  copyNodeId(node);
+}
+
+function copyNodeId(node: TreeNode): void {
+  const id = nodeActionId(node);
+  if (!id) return;
+  navigator.clipboard.writeText(id).then(() => showToast(`Copied: ${id}`));
+}
+
+function openHaPage(node: TreeNode, page: "history" | "logbook"): void {
+  const base = getHaUrl();
+  if (!base) return;
+  const id = nodeActionId(node);
+  if (!id) return;
+  if (node.kind === "area") {
+    window.open(`${base}/config/areas/area/${id}`, "_blank");
+  } else {
+    window.open(`${base}/${page}?entity_id=${id}`, "_blank");
+  }
+}
+
+function showToast(message: string): void {
+  const existing = document.getElementById("force-toast");
+  if (existing) existing.remove();
+
+  const toast = document.createElement("div");
+  toast.id = "force-toast";
+  toast.className = "force-toast";
+  toast.textContent = message;
+  document.body.appendChild(toast);
+
+  setTimeout(() => toast.classList.add("force-toast-visible"), 10);
+  setTimeout(() => {
+    toast.classList.remove("force-toast-visible");
+    setTimeout(() => toast.remove(), 200);
+  }, 1500);
+}
+
+function dismissContextMenu(): void {
+  if (contextMenu) {
+    contextMenu.remove();
+    contextMenu = null;
+  }
+}
+
+function onContextMenu(e: MouseEvent): void {
+  e.preventDefault();
+  dismissContextMenu();
+
+  const n = hitTest(e.offsetX, e.offsetY);
+  if (!n) return;
+  const node = n.tree;
+  const id = nodeActionId(node);
+  if (!id) return;
+
+  hideTip();
+
+  const menu = document.createElement("div");
+  menu.className = "force-context-menu";
+  menu.style.left = `${e.clientX}px`;
+  menu.style.top = `${e.clientY}px`;
+
+  function addItem(label: string, action: () => void): void {
+    const btn = document.createElement("button");
+    btn.textContent = label;
+    btn.addEventListener("click", () => { action(); dismissContextMenu(); });
+    menu.appendChild(btn);
+  }
+
+  addItem(`Copy ID: ${id}`, () => copyNodeId(node));
+
+  const haBase = getHaUrl();
+  if (haBase) {
+    if (node.entityId) {
+      addItem("View History", () => openHaPage(node, "history"));
+      addItem("View Logbook", () => openHaPage(node, "logbook"));
+    } else if (node.kind === "area") {
+      addItem("Open Area in HA", () => openHaPage(node, "history"));
+    }
+  }
+
+  document.body.appendChild(menu);
+  contextMenu = menu;
+
+  const dismiss = (ev: MouseEvent) => {
+    if (!menu.contains(ev.target as Node)) {
+      dismissContextMenu();
+      document.removeEventListener("mousedown", dismiss);
+    }
+  };
+  setTimeout(() => document.addEventListener("mousedown", dismiss), 0);
 }
