@@ -47,6 +47,11 @@ pnpm preview
 
 The built files in `dist/` can be served by any static file server.
 
+## Interactions
+
+- **Click** a node to copy its entity ID to the clipboard
+- **Right-click** a node for a context menu with Copy ID, View History, and View Logbook
+
 ## Keyboard shortcuts
 
 - `` ` `` (backtick) - Toggle debug console

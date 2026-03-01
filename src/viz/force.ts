@@ -80,7 +80,7 @@ type StarEffect = "supernova" | "shooting-star" | "flare" | "pulse-wave" | "colo
 const defaults: ForceSettings = {
   showHulls: false,
   showLabels: true,
-  showEntities: false,
+  showEntities: true,
   constellation: false,
   groupBy: "area",
   structureMode: "domain",
@@ -367,23 +367,36 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   });
   hullGrouping.hidden = !showHulls;
 
-  toggles.appendChild(makeToggle("Hulls", showHulls, (v) => {
+  const hullToggle = makeToggle("Hulls", showHulls, (v) => {
     showHulls = v;
     hullGrouping.hidden = !v;
+    if (v && constellation) {
+      constellation = false;
+      starSliders.hidden = true;
+      constellationToggle.querySelector("input")!.checked = false;
+      ensureLoop();
+    }
     saveSettings();
-  }));
+  });
+  toggles.appendChild(hullToggle);
   toggles.appendChild(makeToggle("Labels", showLabels, (v) => { showLabels = v; saveSettings(); }));
   toggles.appendChild(makeToggle("Entities", showEntities, (v) => {
     showEntities = v;
     rebuildWithStructure();
     saveSettings();
   }));
-  toggles.appendChild(makeToggle("Constellation", constellation, (v) => {
+  const constellationToggle = makeToggle("Constellation", constellation, (v) => {
     constellation = v;
     starSliders.hidden = !v;
+    if (v && showHulls) {
+      showHulls = false;
+      hullGrouping.hidden = true;
+      hullToggle.querySelector("input")!.checked = false;
+    }
     ensureLoop();
     saveSettings();
-  }));
+  });
+  toggles.appendChild(constellationToggle);
   toggles.appendChild(makeSelect("Structure", ["domain", "device"], structureMode, (v) => {
     structureMode = v as StructureMode;
     rebuildWithStructure();

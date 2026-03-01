@@ -431,6 +431,9 @@ body {
   padding: 0.5rem 0.6rem;
   margin-top: 4px;
   max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
 }
 
 .force-toggles {
@@ -462,6 +465,7 @@ body {
   flex-direction: column;
   gap: 0.3rem;
   border-top: 1px solid var(--border);
+  padding-top: 0.4rem;
 }
 
 .force-sliders[hidden] {
