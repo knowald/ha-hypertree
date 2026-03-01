@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0 - 2026-03-01
+
+### Added
+
+- Add Barnes-Hut quadtree for O(n log n) repulsion, replacing O(n^2) all-pairs loop
+- Add entities toggle (default off) to start with only areas, domains, and devices visible
+- Cache constellation star sprites on offscreen canvases to avoid per-frame gradient creation
+
+### Changed
+
+- Tune default force parameters: repulsion 3000, spring length 64, stiffness 0.035, damping 0.8
+- Tune default constellation parameters: glow brightness 2, star size 0.8, glow intensity 1.2, twinkle speed 0.1
+- Increase default label size to 16 and entity dot size to 16
+
 ## 0.2.0 - 2026-03-01
 
 ### Added

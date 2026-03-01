@@ -56,6 +56,7 @@ const SETTINGS_KEY = "ha-hypertree-force-settings";
 interface ForceSettings {
   showHulls: boolean;
   showLabels: boolean;
+  showEntities: boolean;
   constellation: boolean;
   groupBy: GroupMode;
   structureMode: StructureMode;
@@ -79,23 +80,24 @@ type StarEffect = "supernova" | "shooting-star" | "flare" | "pulse-wave" | "colo
 const defaults: ForceSettings = {
   showHulls: false,
   showLabels: true,
+  showEntities: false,
   constellation: false,
   groupBy: "area",
   structureMode: "domain",
-  starSize: 1,
-  glowIntensity: 1,
-  parentGlowIntensity: 2,
+  starSize: 0.8,
+  glowIntensity: 1.2,
+  parentGlowIntensity: 0.2,
   effectScale: 2,
-  twinkleSpeed: 0.2,
-  lineGlow: 0.2,
-  glowBrightness: 1,
+  twinkleSpeed: 0.1,
+  lineGlow: 0.3,
+  glowBrightness: 2,
   starEffect: "supernova",
-  labelSize: 10,
-  entityDotSize: 3,
-  repulsion: 800,
-  springLen: 40,
-  springK: 0.03,
-  damping: 0.85,
+  labelSize: 16,
+  entityDotSize: 16,
+  repulsion: 3000,
+  springLen: 64,
+  springK: 0.035,
+  damping: 0.8,
 };
 
 function loadSettings(): ForceSettings {
@@ -108,7 +110,7 @@ function loadSettings(): ForceSettings {
 
 function saveSettings(): void {
   const s: ForceSettings = {
-    showHulls, showLabels, constellation, groupBy, structureMode,
+    showHulls, showLabels, showEntities, constellation, groupBy, structureMode,
     starSize, glowIntensity, twinkleSpeed, lineGlow, glowBrightness,
     starEffect, parentGlowIntensity, effectScale,
     labelSize, entityDotSize, repulsion, springLen, springK, damping,
@@ -119,6 +121,7 @@ function saveSettings(): void {
 const saved = loadSettings();
 let showHulls = saved.showHulls;
 let showLabels = saved.showLabels;
+let showEntities = saved.showEntities;
 let constellation = saved.constellation;
 let groupBy: GroupMode = saved.groupBy;
 let structureMode: StructureMode = saved.structureMode;
@@ -151,6 +154,87 @@ let alpha = 1;
 const ENTITY_LABEL_ZOOM = 2.5;
 const DOMAIN_LABEL_ZOOM = 1.5;
 const GLOW_DURATION = 3000;
+
+// Star sprite cache: pre-rendered gradient stars keyed by "color|sizeCategory|glowParam"
+const spriteCache = new Map<string, { canvas: OffscreenCanvas; size: number }>();
+let spriteCacheVersion = 0;
+let lastSpriteParams = "";
+
+function getSpriteParams(): string {
+  return `${glowIntensity}|${parentGlowIntensity}`;
+}
+
+function invalidateSpriteCache(): void {
+  const params = getSpriteParams();
+  if (params !== lastSpriteParams) {
+    spriteCache.clear();
+    lastSpriteParams = params;
+    spriteCacheVersion++;
+  }
+}
+
+function getStarSprite(nodeCol: string, intensity: number): { canvas: OffscreenCanvas; size: number } {
+  const key = `${nodeCol}|${intensity}|${spriteCacheVersion}`;
+  let entry = spriteCache.get(key);
+  if (entry) return entry;
+
+  // Sprite dimensions: the halo is the largest element at 8 * intensity relative to base star size.
+  // We render at a fixed pixel resolution and scale when drawing.
+  // Use a base of 128px for the halo radius, so total sprite is 256x256.
+  const spritePixels = 256;
+  const center = spritePixels / 2;
+  const haloR = center; // fills the sprite
+  const innerR = (center / 8) * 3 * intensity; // starR * 3 * intensity relative to haloR = starR * 8 * intensity
+  const coreR = (center / 8) * 0.6;
+  const spikeLen = (center / 8) * 3;
+
+  const oc = new OffscreenCanvas(spritePixels, spritePixels);
+  const sctx = oc.getContext("2d")!;
+
+  // Outer glow
+  const outerGlow = sctx.createRadialGradient(center, center, 0, center, center, haloR);
+  outerGlow.addColorStop(0, nodeCol);
+  outerGlow.addColorStop(0.25, nodeCol);
+  outerGlow.addColorStop(1, transparent(nodeCol));
+  sctx.globalAlpha = 0.6 * intensity;
+  sctx.fillStyle = outerGlow;
+  sctx.beginPath();
+  sctx.arc(center, center, haloR, 0, Math.PI * 2);
+  sctx.fill();
+
+  // Inner glow
+  const innerGlow = sctx.createRadialGradient(center, center, 0, center, center, innerR);
+  innerGlow.addColorStop(0, "#fff");
+  innerGlow.addColorStop(0.3, nodeCol);
+  innerGlow.addColorStop(1, transparent(nodeCol));
+  sctx.globalAlpha = 0.8 * intensity;
+  sctx.fillStyle = innerGlow;
+  sctx.beginPath();
+  sctx.arc(center, center, innerR, 0, Math.PI * 2);
+  sctx.fill();
+
+  // Core dot
+  sctx.globalAlpha = 1;
+  sctx.fillStyle = "#fff";
+  sctx.beginPath();
+  sctx.arc(center, center, coreR, 0, Math.PI * 2);
+  sctx.fill();
+
+  // Cross spikes
+  sctx.strokeStyle = nodeCol;
+  sctx.globalAlpha = 0.6;
+  sctx.lineWidth = 1;
+  sctx.beginPath();
+  sctx.moveTo(center - spikeLen, center);
+  sctx.lineTo(center + spikeLen, center);
+  sctx.moveTo(center, center - spikeLen);
+  sctx.lineTo(center, center + spikeLen);
+  sctx.stroke();
+
+  entry = { canvas: oc, size: spritePixels };
+  spriteCache.set(key, entry);
+  return entry;
+}
 
 export function createForceViz(registries: Registries): Visualization {
   return {
@@ -289,6 +373,11 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     saveSettings();
   }));
   toggles.appendChild(makeToggle("Labels", showLabels, (v) => { showLabels = v; saveSettings(); }));
+  toggles.appendChild(makeToggle("Entities", showEntities, (v) => {
+    showEntities = v;
+    rebuildWithStructure();
+    saveSettings();
+  }));
   toggles.appendChild(makeToggle("Constellation", constellation, (v) => {
     constellation = v;
     starSliders.hidden = !v;
@@ -351,6 +440,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   randomColorBtn.textContent = "Randomize colors";
   randomColorBtn.addEventListener("click", () => {
     randomizeColors();
+    spriteCache.clear();
     ensureLoop();
   });
   buttons.appendChild(randomColorBtn);
@@ -360,9 +450,11 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   resetAllBtn.textContent = "Reset all settings";
   resetAllBtn.addEventListener("click", () => {
     resetColors();
+    spriteCache.clear();
     Object.assign(saved, defaults);
     showHulls = defaults.showHulls;
     showLabels = defaults.showLabels;
+    showEntities = defaults.showEntities;
     constellation = defaults.constellation;
     groupBy = defaults.groupBy;
     structureMode = defaults.structureMode;
@@ -508,7 +600,8 @@ function rebuildClusters(): void {
 }
 
 function buildGraph(root: TreeNode): void {
-  const nodes = flatten(root);
+  const allNodes = flatten(root);
+  const nodes = showEntities ? allNodes : allNodes.filter((n) => n.kind !== "entity");
   const map = new Map<TreeNode, FNode>();
 
   fnodes = nodes.map((n) => {
@@ -579,25 +672,129 @@ function tick(): void {
   }
 }
 
-function simulate(): void {
-  const ra = repulsion * alpha;
-  for (let i = 0; i < fnodes.length; i++) {
-    const a = fnodes[i];
-    for (let j = i + 1; j < fnodes.length; j++) {
-      const b = fnodes[j];
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      let d2 = dx * dx + dy * dy;
-      if (d2 < 1) d2 = 1;
-      const fd = ra / (d2 * Math.sqrt(d2));
-      const fx = dx * fd;
-      const fy = dy * fd;
-      a.vx -= fx;
-      a.vy -= fy;
-      b.vx += fx;
-      b.vy += fy;
+// Barnes-Hut quadtree with fixed spatial bounds
+interface QuadNode {
+  x0: number; y0: number; // spatial bounds min
+  x1: number; y1: number; // spatial bounds max
+  cx: number; cy: number; // center of mass
+  count: number;
+  body: FNode | null;     // leaf body (null for internal / empty)
+  nw: QuadNode | null;
+  ne: QuadNode | null;
+  sw: QuadNode | null;
+  se: QuadNode | null;
+}
+
+function quadCreate(x0: number, y0: number, x1: number, y1: number): QuadNode {
+  return { x0, y0, x1, y1, cx: 0, cy: 0, count: 0, body: null, nw: null, ne: null, sw: null, se: null };
+}
+
+function quadInsert(quad: QuadNode, fn: FNode): void {
+  if (quad.count === 0) {
+    quad.body = fn;
+    quad.cx = fn.x;
+    quad.cy = fn.y;
+    quad.count = 1;
+    return;
+  }
+
+  // Update center of mass
+  const total = quad.count + 1;
+  quad.cx = (quad.cx * quad.count + fn.x) / total;
+  quad.cy = (quad.cy * quad.count + fn.y) / total;
+  quad.count = total;
+
+  // If leaf with existing body, push it down then insert new
+  if (quad.body) {
+    const existing = quad.body;
+    quad.body = null;
+    quadPush(quad, existing);
+  }
+  quadPush(quad, fn);
+}
+
+function quadPush(quad: QuadNode, fn: FNode): void {
+  const mx = (quad.x0 + quad.x1) / 2;
+  const my = (quad.y0 + quad.y1) / 2;
+  const east = fn.x >= mx;
+  const south = fn.y >= my;
+
+  let child: QuadNode | null;
+  if (east) {
+    if (south) {
+      child = quad.se;
+      if (!child) { child = quadCreate(mx, my, quad.x1, quad.y1); quad.se = child; }
+    } else {
+      child = quad.ne;
+      if (!child) { child = quadCreate(mx, quad.y0, quad.x1, my); quad.ne = child; }
+    }
+  } else {
+    if (south) {
+      child = quad.sw;
+      if (!child) { child = quadCreate(quad.x0, my, mx, quad.y1); quad.sw = child; }
+    } else {
+      child = quad.nw;
+      if (!child) { child = quadCreate(quad.x0, quad.y0, mx, my); quad.nw = child; }
     }
   }
+
+  quadInsert(child, fn);
+}
+
+const BH_THETA = 0.9;
+
+function quadRepulse(quad: QuadNode, fn: FNode, ra: number): void {
+  if (quad.count === 0) return;
+
+  const dx = quad.cx - fn.x;
+  const dy = quad.cy - fn.y;
+  const d2 = dx * dx + dy * dy;
+
+  if (quad.count === 1 && quad.body) {
+    if (quad.body === fn) return;
+    const dist2 = Math.max(d2, 1);
+    const fd = ra / (dist2 * Math.sqrt(dist2));
+    fn.vx -= dx * fd;
+    fn.vy -= dy * fd;
+    return;
+  }
+
+  // Barnes-Hut criterion: cell width / distance < theta → approximate
+  const s = quad.x1 - quad.x0;
+  if (s * s < BH_THETA * BH_THETA * d2) {
+    const dist2 = Math.max(d2, 1);
+    const fd = (ra * quad.count) / (dist2 * Math.sqrt(dist2));
+    fn.vx -= dx * fd;
+    fn.vy -= dy * fd;
+    return;
+  }
+
+  if (quad.nw) quadRepulse(quad.nw, fn, ra);
+  if (quad.ne) quadRepulse(quad.ne, fn, ra);
+  if (quad.sw) quadRepulse(quad.sw, fn, ra);
+  if (quad.se) quadRepulse(quad.se, fn, ra);
+}
+
+function simulate(): void {
+  const ra = repulsion * alpha;
+
+  // Compute bounding box for quadtree
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const fn of fnodes) {
+    if (fn.x < minX) minX = fn.x;
+    if (fn.y < minY) minY = fn.y;
+    if (fn.x > maxX) maxX = fn.x;
+    if (fn.y > maxY) maxY = fn.y;
+  }
+  // Pad slightly and make square for even subdivision
+  const pad = 10;
+  const side = Math.max(maxX - minX, maxY - minY) + pad * 2;
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const root = quadCreate(cx - side / 2, cy - side / 2, cx + side / 2, cy + side / 2);
+
+  for (const fn of fnodes) quadInsert(root, fn);
+  for (const fn of fnodes) quadRepulse(root, fn, ra);
 
   for (const edge of fedges) {
     const dx = edge.target.x - edge.source.x;
@@ -916,57 +1113,24 @@ function drawConstellation(ctx: CanvasRenderingContext2D, now: number): void {
 
   const starScale = starSize / Math.sqrt(transform.k);
 
-  function drawStar(fn: FNode): void {
+  invalidateSpriteCache();
+
+  for (const fn of fnodes) {
+    if (fn.tree.kind !== "entity") continue;
+
     const phase = fn.x * 0.1 + fn.y * 0.07;
     const twinkle = twinkleSpeed === 0 ? 1 : 0.5 + 0.5 * Math.sin(now * 0.003 * twinkleSpeed + phase);
     const pulse = twinkle * twinkle;
-    const baseAlpha = fn.tree.kind === "entity" ? 0.5 : 0.9;
-    const starAlpha = Math.min(1, baseAlpha * (0.15 + 0.85 * pulse) * glowBrightness);
+    const starAlpha = Math.min(1, 0.5 * (0.15 + 0.85 * pulse) * glowBrightness);
 
     const nodeCol = color(fn.tree);
-    const starR = (fn.tree.kind === "entity" ? 5 : fn.tree.kind === "root" ? 14 : 9) * starScale;
+    const starR = 5 * starScale;
     const haloR = starR * 8 * glowIntensity;
-
-    const outerGlow = ctx.createRadialGradient(fn.x, fn.y, 0, fn.x, fn.y, haloR);
-    outerGlow.addColorStop(0, nodeCol);
-    outerGlow.addColorStop(0.25, nodeCol);
-    outerGlow.addColorStop(1, transparent(nodeCol));
-    ctx.globalAlpha = Math.min(1, starAlpha * 0.6 * glowIntensity);
-    ctx.fillStyle = outerGlow;
-    ctx.beginPath();
-    ctx.arc(fn.x, fn.y, haloR, 0, Math.PI * 2);
-    ctx.fill();
-
-    const innerGlow = ctx.createRadialGradient(fn.x, fn.y, 0, fn.x, fn.y, starR * 3 * glowIntensity);
-    innerGlow.addColorStop(0, "#fff");
-    innerGlow.addColorStop(0.3, nodeCol);
-    innerGlow.addColorStop(1, transparent(nodeCol));
-    ctx.globalAlpha = Math.min(1, starAlpha * 0.8 * glowIntensity);
-    ctx.fillStyle = innerGlow;
-    ctx.beginPath();
-    ctx.arc(fn.x, fn.y, starR * 3 * glowIntensity, 0, Math.PI * 2);
-    ctx.fill();
+    const sprite = getStarSprite(nodeCol, glowIntensity);
+    const drawSize = haloR * 2;
 
     ctx.globalAlpha = starAlpha;
-    ctx.fillStyle = "#fff";
-    ctx.beginPath();
-    ctx.arc(fn.x, fn.y, starR * 0.6, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.strokeStyle = nodeCol;
-    ctx.globalAlpha = starAlpha * 0.6;
-    ctx.lineWidth = 0.5 * starScale;
-    const spikeLen = starR * 3;
-    ctx.beginPath();
-    ctx.moveTo(fn.x - spikeLen, fn.y);
-    ctx.lineTo(fn.x + spikeLen, fn.y);
-    ctx.moveTo(fn.x, fn.y - spikeLen);
-    ctx.lineTo(fn.x, fn.y + spikeLen);
-    ctx.stroke();
-  }
-
-  for (const fn of fnodes) {
-    if (fn.tree.kind === "entity") drawStar(fn);
+    ctx.drawImage(sprite.canvas, fn.x - haloR, fn.y - haloR, drawSize, drawSize);
   }
 
   ctx.globalAlpha = 1;
@@ -974,6 +1138,7 @@ function drawConstellation(ctx: CanvasRenderingContext2D, now: number): void {
 
 function drawConstellationParents(ctx: CanvasRenderingContext2D, now: number): void {
   const starScale = starSize / Math.sqrt(transform.k);
+  const pgi = parentGlowIntensity;
 
   for (const fn of fnodes) {
     if (fn.tree.kind === "entity") continue;
@@ -985,45 +1150,12 @@ function drawConstellationParents(ctx: CanvasRenderingContext2D, now: number): v
 
     const nodeCol = color(fn.tree);
     const starR = (fn.tree.kind === "root" ? 14 : 9) * starScale;
-    const pgi = parentGlowIntensity;
     const haloR = starR * 8 * pgi;
-
-    const outerGlow = ctx.createRadialGradient(fn.x, fn.y, 0, fn.x, fn.y, haloR);
-    outerGlow.addColorStop(0, nodeCol);
-    outerGlow.addColorStop(0.25, nodeCol);
-    outerGlow.addColorStop(1, transparent(nodeCol));
-    ctx.globalAlpha = Math.min(1, starAlpha * 0.6 * pgi);
-    ctx.fillStyle = outerGlow;
-    ctx.beginPath();
-    ctx.arc(fn.x, fn.y, haloR, 0, Math.PI * 2);
-    ctx.fill();
-
-    const innerGlow = ctx.createRadialGradient(fn.x, fn.y, 0, fn.x, fn.y, starR * 3 * pgi);
-    innerGlow.addColorStop(0, "#fff");
-    innerGlow.addColorStop(0.3, nodeCol);
-    innerGlow.addColorStop(1, transparent(nodeCol));
-    ctx.globalAlpha = Math.min(1, starAlpha * 0.8 * pgi);
-    ctx.fillStyle = innerGlow;
-    ctx.beginPath();
-    ctx.arc(fn.x, fn.y, starR * 3 * pgi, 0, Math.PI * 2);
-    ctx.fill();
+    const sprite = getStarSprite(nodeCol, pgi);
+    const drawSize = haloR * 2;
 
     ctx.globalAlpha = starAlpha;
-    ctx.fillStyle = "#fff";
-    ctx.beginPath();
-    ctx.arc(fn.x, fn.y, starR * 0.6, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.strokeStyle = nodeCol;
-    ctx.globalAlpha = starAlpha * 0.6;
-    ctx.lineWidth = 0.5 * starScale;
-    const spikeLen = starR * 3;
-    ctx.beginPath();
-    ctx.moveTo(fn.x - spikeLen, fn.y);
-    ctx.lineTo(fn.x + spikeLen, fn.y);
-    ctx.moveTo(fn.x, fn.y - spikeLen);
-    ctx.lineTo(fn.x, fn.y + spikeLen);
-    ctx.stroke();
+    ctx.drawImage(sprite.canvas, fn.x - haloR, fn.y - haloR, drawSize, drawSize);
   }
 
   ctx.globalAlpha = 1;
