@@ -86,7 +86,7 @@ interface ForceSettings {
 }
 
 type StarEffect = "supernova" | "shooting-star" | "flare" | "pulse-wave" | "color-shift";
-type UnavailableMode = "normal" | "pulse" | "hidden";
+type UnavailableMode = "normal" | "pulse" | "hidden" | "only";
 const defaults: ForceSettings = {
   showHulls: false,
   showLabels: true,
@@ -417,10 +417,10 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     rebuildWithStructure();
     saveSettings();
   }));
-  displayToggles.appendChild(makeSelect("Unavailable", ["normal", "pulse", "hidden"], unavailableMode, (v) => {
+  displayToggles.appendChild(makeSelect("Unavailable", ["normal", "pulse", "hidden", "only"], unavailableMode, (v) => {
     const prev = unavailableMode;
     unavailableMode = v as UnavailableMode;
-    if (v === "hidden" || prev === "hidden") rebuildWithStructure();
+    if (v === "hidden" || prev === "hidden" || v === "only" || prev === "only") rebuildWithStructure();
     ensureLoop();
     saveSettings();
   }));
@@ -695,15 +695,25 @@ function rebuildClusters(): void {
 
 function buildGraph(root: TreeNode): void {
   const allNodes = flatten(root);
-  const nodes = showEntities
-    ? (unavailableMode === "hidden"
-      ? allNodes.filter((n) => {
-          if (n.kind !== "entity" || !n.entityId) return true;
-          const state = currentStates.get(n.entityId);
-          return !(state && state.state === "unavailable");
-        })
-      : allNodes)
-    : allNodes.filter((n) => n.kind !== "entity");
+  let nodes: TreeNode[];
+  if (!showEntities) {
+    nodes = allNodes.filter((n) => n.kind !== "entity");
+  } else if (unavailableMode === "hidden") {
+    nodes = allNodes.filter((n) => {
+      if (n.kind !== "entity" || !n.entityId) return true;
+      const state = currentStates.get(n.entityId);
+      return !(state && state.state === "unavailable");
+    });
+  } else if (unavailableMode === "only") {
+    nodes = allNodes.filter((n) => {
+      if (n.kind !== "entity") return true;
+      if (!n.entityId) return false;
+      const state = currentStates.get(n.entityId);
+      return state !== undefined && state.state === "unavailable";
+    });
+  } else {
+    nodes = allNodes;
+  }
   const map = new Map<TreeNode, FNode>();
 
   fnodes = nodes.map((n) => {

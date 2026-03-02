@@ -1,6 +1,6 @@
 {
   "name": "ha-hypertree",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Interactive tree visualizations for a Home Assistant entity hierarchy",
   "license": "MIT",
   "type": "module",

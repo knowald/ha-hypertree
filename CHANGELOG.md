@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1 - 2026-03-02
+
+### Added
+
+- Add "only" unavailable display mode to show only unavailable entities
+
 ## 0.6.0 - 2026-03-02
 
 ### Added
