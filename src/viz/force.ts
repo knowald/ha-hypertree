@@ -57,6 +57,7 @@ interface ForceSettings {
   showHulls: boolean;
   showLabels: boolean;
   showEntities: boolean;
+  pulseUnavailable: boolean;
   constellation: boolean;
   groupBy: GroupMode;
   structureMode: StructureMode;
@@ -81,6 +82,7 @@ const defaults: ForceSettings = {
   showHulls: false,
   showLabels: true,
   showEntities: true,
+  pulseUnavailable: true,
   constellation: false,
   groupBy: "area",
   structureMode: "domain",
@@ -110,7 +112,7 @@ function loadSettings(): ForceSettings {
 
 function saveSettings(): void {
   const s: ForceSettings = {
-    showHulls, showLabels, showEntities, constellation, groupBy, structureMode,
+    showHulls, showLabels, showEntities, pulseUnavailable, constellation, groupBy, structureMode,
     starSize, glowIntensity, twinkleSpeed, lineGlow, glowBrightness,
     starEffect, parentGlowIntensity, effectScale,
     labelSize, entityDotSize, repulsion, springLen, springK, damping,
@@ -122,6 +124,7 @@ const saved = loadSettings();
 let showHulls = saved.showHulls;
 let showLabels = saved.showLabels;
 let showEntities = saved.showEntities;
+let pulseUnavailable = saved.pulseUnavailable;
 let constellation = saved.constellation;
 let groupBy: GroupMode = saved.groupBy;
 let structureMode: StructureMode = saved.structureMode;
@@ -385,6 +388,11 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     rebuildWithStructure();
     saveSettings();
   }));
+  toggles.appendChild(makeToggle("Pulse unavailable", pulseUnavailable, (v) => {
+    pulseUnavailable = v;
+    ensureLoop();
+    saveSettings();
+  }));
   const constellationToggle = makeToggle("Constellation", constellation, (v) => {
     constellation = v;
     starSliders.hidden = !v;
@@ -468,6 +476,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     showHulls = defaults.showHulls;
     showLabels = defaults.showLabels;
     showEntities = defaults.showEntities;
+    pulseUnavailable = defaults.pulseUnavailable;
     constellation = defaults.constellation;
     groupBy = defaults.groupBy;
     structureMode = defaults.structureMode;
@@ -677,7 +686,7 @@ function tick(): void {
 
   draw();
 
-  const needsAnimation = alpha > 0.001 || glowTimestamps.size > 0 || dragNode !== null || panning || constellation;
+  const needsAnimation = alpha > 0.001 || glowTimestamps.size > 0 || dragNode !== null || panning || constellation || pulseUnavailable;
   if (needsAnimation) {
     frame = requestAnimationFrame(tick);
   } else {
@@ -1131,12 +1140,14 @@ function drawConstellation(ctx: CanvasRenderingContext2D, now: number): void {
   for (const fn of fnodes) {
     if (fn.tree.kind !== "entity") continue;
 
+    const unavail = pulseUnavailable && isUnavailable(fn);
     const phase = fn.x * 0.1 + fn.y * 0.07;
     const twinkle = twinkleSpeed === 0 ? 1 : 0.5 + 0.5 * Math.sin(now * 0.003 * twinkleSpeed + phase);
     const pulse = twinkle * twinkle;
-    const starAlpha = Math.min(1, 0.5 * (0.15 + 0.85 * pulse) * glowBrightness);
+    const baseAlpha = unavail ? 0.15 : 0.5;
+    const starAlpha = Math.min(1, baseAlpha * (0.15 + 0.85 * pulse) * glowBrightness);
 
-    const nodeCol = color(fn.tree);
+    const nodeCol = unavail ? "#666" : color(fn.tree);
     const starR = 5 * starScale;
     const haloR = starR * 8 * glowIntensity;
     const sprite = getStarSprite(nodeCol, glowIntensity);
@@ -1420,6 +1431,39 @@ function drawColorShift(ctx: CanvasRenderingContext2D, fn: FNode, t: number, ss:
   ctx.fill();
 }
 
+function isUnavailable(fn: FNode): boolean {
+  if (!fn.tree.entityId) return false;
+  const state = currentStates.get(fn.tree.entityId);
+  return state !== undefined && state.state === "unavailable";
+}
+
+function drawUnavailablePulses(ctx: CanvasRenderingContext2D, now: number): void {
+  if (!pulseUnavailable) return;
+
+  const pulse = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(now * 0.004));
+
+  for (const fn of fnodes) {
+    if (!isUnavailable(fn)) continue;
+
+    const r = fn.r * 2.5;
+
+    ctx.globalAlpha = pulse * 0.3;
+    ctx.fillStyle = "#ef5350";
+    ctx.beginPath();
+    ctx.arc(fn.x, fn.y, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.globalAlpha = pulse * 0.7;
+    ctx.strokeStyle = "#ef5350";
+    ctx.lineWidth = 1.5 / transform.k;
+    ctx.beginPath();
+    ctx.arc(fn.x, fn.y, r, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  ctx.globalAlpha = 1;
+}
+
 function draw(): void {
   if (!canvas || !ctx) return;
   const dpr = devicePixelRatio;
@@ -1438,6 +1482,7 @@ function draw(): void {
     drawConstellation(ctx, now);
     drawStarEffects(ctx, now);
     drawConstellationParents(ctx, now);
+    drawUnavailablePulses(ctx, now);
     drawSearchHighlights(ctx);
     if (showLabels) drawLabels(ctx);
     return;
@@ -1459,11 +1504,16 @@ function draw(): void {
   }
 
   for (const n of fnodes) {
+    const unavail = pulseUnavailable && isUnavailable(n);
+    ctx.globalAlpha = unavail ? 0.3 : 1;
     ctx.beginPath();
     ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
-    ctx.fillStyle = color(n.tree);
+    ctx.fillStyle = unavail ? "#666" : color(n.tree);
     ctx.fill();
   }
+  ctx.globalAlpha = 1;
+
+  drawUnavailablePulses(ctx, performance.now());
 
   if (hoveredNode) {
     drawHoverHighlight(ctx, hoveredNode);

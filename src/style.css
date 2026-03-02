@@ -108,6 +108,29 @@ body {
   font-size: 0.8rem;
 }
 
+.protocol-warning {
+  background: #332200;
+  border: 1px solid #665500;
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8rem;
+  color: #ffcc44;
+  line-height: 1.5;
+}
+
+.protocol-warning[hidden] {
+  display: none;
+}
+
+.protocol-warning a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.protocol-warning a:hover {
+  text-decoration: underline;
+}
+
 .token-explainer {
   font-size: 0.8rem;
   color: var(--text-muted);

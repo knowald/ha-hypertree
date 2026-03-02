@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0 - 2026-03-02
+
+### Added
+
+- Add unavailable entity pulse with dimmed grey appearance in both normal and constellation modes
+- Add protocol mismatch warning on login form when entering HTTP URL from HTTPS page
+- Add GitHub Actions workflow for GitHub Pages deployment
+- Add mutual exclusion between Hulls and Constellation toggles
+
+### Changed
+
+- Default entities toggle to on
+- Add spacing between settings panel groups
+
 ## 0.3.0 - 2026-03-01
 
 ### Added

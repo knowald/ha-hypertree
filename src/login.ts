@@ -26,6 +26,7 @@ export function renderLoginForm(
         <input type="password" id="ha-token" placeholder="eyJhbGciOi..."
                value="${saved?.token ?? ""}" required />
       </label>
+      <p id="protocol-warning" class="protocol-warning" hidden></p>
       <button type="submit">Connect</button>
       <p id="login-error" class="error" hidden></p>
       ${import.meta.env.VITE_HIDE_EXPLAINER !== "true" ? `
@@ -52,9 +53,31 @@ export function renderLoginForm(
   `;
 
   const form = container.querySelector("#login-form") as HTMLFormElement;
+  const urlInput = container.querySelector("#ha-url") as HTMLInputElement;
+  const protocolWarning = container.querySelector("#protocol-warning") as HTMLElement;
+
+  function checkProtocolMismatch(): void {
+    const inputUrl = urlInput.value.trim().toLowerCase();
+    const pageIsHttps = location.protocol === "https:";
+    const targetIsHttp = inputUrl.startsWith("http://");
+
+    if (pageIsHttps && targetIsHttp) {
+      const httpPage = location.href.replace(/^https:/, "http:");
+      protocolWarning.innerHTML =
+        `Connecting to an HTTP server from an HTTPS page is blocked by your browser. ` +
+        `<a href="${httpPage}">Switch to HTTP</a> to connect to this instance.`;
+      protocolWarning.hidden = false;
+    } else {
+      protocolWarning.hidden = true;
+    }
+  }
+
+  urlInput.addEventListener("input", checkProtocolMismatch);
+  checkProtocolMismatch();
+
   form.addEventListener("submit", (e) => {
     e.preventDefault();
-    const url = (container.querySelector("#ha-url") as HTMLInputElement).value.trim();
+    const url = urlInput.value.trim();
     const token = (container.querySelector("#ha-token") as HTMLInputElement).value.trim();
     const creds = { url, token };
     saveCredentials(creds);
