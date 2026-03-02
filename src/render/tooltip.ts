@@ -36,16 +36,20 @@ export function showTooltip(
   el.innerHTML = html;
   el.style.display = "block";
 
+  const rootRect = getRootElement().getBoundingClientRect();
+  const localX = x - rootRect.left;
+  const localY = y - rootRect.top;
+
   const padding = 12;
-  let left = x + padding;
-  let top = y + padding;
+  let left = localX + padding;
+  let top = localY + padding;
 
   const rect = el.getBoundingClientRect();
-  if (left + rect.width > window.innerWidth) {
-    left = x - rect.width - padding;
+  if (left + rect.width > rootRect.width) {
+    left = localX - rect.width - padding;
   }
-  if (top + rect.height > window.innerHeight) {
-    top = y - rect.height - padding;
+  if (top + rect.height > rootRect.height) {
+    top = localY - rect.height - padding;
   }
 
   el.style.left = `${left}px`;

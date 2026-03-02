@@ -1683,10 +1683,11 @@ function onContextMenu(e: MouseEvent): void {
 
   hideTip();
 
+  const rootRect = getRootElement().getBoundingClientRect();
   const menu = document.createElement("div");
   menu.className = "force-context-menu";
-  menu.style.left = `${e.clientX}px`;
-  menu.style.top = `${e.clientY}px`;
+  menu.style.left = `${e.clientX - rootRect.left}px`;
+  menu.style.top = `${e.clientY - rootRect.top}px`;
 
   function addItem(label: string, action: () => void): void {
     const btn = document.createElement("button");

@@ -6,7 +6,8 @@
   padding: 0;
 }
 
-:root {
+:root,
+:host {
   --bg: #121212;
   --surface: #1e1e1e;
   --text: #e0e0e0;
@@ -26,7 +27,19 @@ body {
   overflow: hidden;
 }
 
+:host {
+  display: block;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  overflow: hidden;
+}
+
 #app {
+  position: relative;
   height: 100%;
   display: flex;
   align-items: center;
@@ -216,7 +229,7 @@ body {
 
 /* Tooltip */
 .tooltip {
-  position: fixed;
+  position: absolute;
   display: none;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -239,7 +252,7 @@ body {
 
 /* Status bar */
 #status {
-  position: fixed;
+  position: absolute;
   bottom: 12px;
   left: 50%;
   transform: translateX(-50%);
@@ -278,7 +291,7 @@ body {
 
 /* Control panels */
 #filter-panel {
-  position: fixed;
+  position: absolute;
   top: 12px;
   left: 12px;
   z-index: 200;
@@ -358,7 +371,7 @@ body {
 }
 
 #view-panel {
-  position: fixed;
+  position: absolute;
   top: 12px;
   right: 12px;
   z-index: 200;
@@ -386,7 +399,7 @@ body {
 
 /* Visualization switcher bar */
 #viz-bar {
-  position: fixed;
+  position: absolute;
   top: 0;
   left: 0;
   right: 0;
@@ -575,7 +588,7 @@ body {
 }
 
 .force-toast {
-  position: fixed;
+  position: absolute;
   bottom: 48px;
   left: 50%;
   transform: translateX(-50%) translateY(8px);
@@ -597,7 +610,7 @@ body {
 }
 
 .force-context-menu {
-  position: fixed;
+  position: absolute;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -624,7 +637,7 @@ body {
 
 /* Debug console */
 #debug-console {
-  position: fixed;
+  position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
