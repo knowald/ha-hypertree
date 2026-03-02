@@ -6,6 +6,7 @@ import type { HaState } from "./ha/types";
 import type { Connection } from "home-assistant-js-websocket";
 import { initDebugConsole, debugLog } from "./debug";
 
+import { getRootElement } from "./rootElement";
 import { createSwitcher } from "./viz/switcher";
 import { hyperbolicViz } from "./viz/hyperbolic";
 import { treemapViz } from "./viz/treemap";
@@ -98,7 +99,7 @@ async function initTree(connection: Connection) {
 
   const switcher = createSwitcher(treeContainer, visualizations, root, states, "Force");
 
-  const vizBar = document.getElementById("viz-bar");
+  const vizBar = getRootElement().querySelector("#viz-bar");
   if (vizBar) {
     const spacer = document.createElement("div");
     spacer.className = "viz-bar-spacer";
@@ -119,7 +120,7 @@ async function initTree(connection: Connection) {
   const statusEl = document.createElement("div");
   statusEl.id = "status";
   statusEl.textContent = `${nodes.length} nodes | ${registries.areas.length} areas`;
-  document.body.appendChild(statusEl);
+  getRootElement().appendChild(statusEl);
 }
 
 interface StateChangedEvent {

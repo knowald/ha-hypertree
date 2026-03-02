@@ -6,6 +6,7 @@ import { randomizeColors, resetColors } from "../render/colors";
 import { createTransform, applyWheel, screenToWorld, type ZoomTransform } from "./zoom";
 import { buildTree, buildTreeByDevice } from "../tree/build";
 import { loadCredentials } from "../login";
+import { getRootElement } from "../rootElement";
 
 interface FNode {
   tree: TreeNode;
@@ -37,6 +38,7 @@ let settingsPanel: HTMLDivElement | null = null;
 let frame = 0;
 let currentStates: Map<string, HaState> = new Map();
 let currentRegistries: Registries | null = null;
+let panelHaUrl = "";
 let fnodes: FNode[] = [];
 let fedges: FEdge[] = [];
 let clusters: Cluster[] = [];
@@ -239,7 +241,8 @@ function getStarSprite(nodeCol: string, intensity: number): { canvas: OffscreenC
   return entry;
 }
 
-export function createForceViz(registries: Registries): Visualization {
+export function createForceViz(registries: Registries, haUrl?: string): Visualization {
+  panelHaUrl = haUrl ?? "";
   return {
     name: "Force",
 
@@ -1611,6 +1614,7 @@ function onMouseUp(): void {
 }
 
 function getHaUrl(): string {
+  if (panelHaUrl) return panelHaUrl;
   const creds = loadCredentials();
   return creds?.url?.replace(/\/+$/, "") ?? "";
 }
@@ -1644,14 +1648,14 @@ function openHaPage(node: TreeNode, page: "history" | "logbook"): void {
 }
 
 function showToast(message: string): void {
-  const existing = document.getElementById("force-toast");
+  const existing = getRootElement().querySelector("#force-toast");
   if (existing) existing.remove();
 
   const toast = document.createElement("div");
   toast.id = "force-toast";
   toast.className = "force-toast";
   toast.textContent = message;
-  document.body.appendChild(toast);
+  getRootElement().appendChild(toast);
 
   setTimeout(() => toast.classList.add("force-toast-visible"), 10);
   setTimeout(() => {
@@ -1703,7 +1707,7 @@ function onContextMenu(e: MouseEvent): void {
     }
   }
 
-  document.body.appendChild(menu);
+  getRootElement().appendChild(menu);
   contextMenu = menu;
 
   const dismiss = (ev: MouseEvent) => {

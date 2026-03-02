@@ -1,5 +1,6 @@
 node_modules
 dist
+dist-panel
 .DS_Store
 *.local
 .env

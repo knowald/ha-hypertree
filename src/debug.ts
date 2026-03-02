@@ -1,3 +1,5 @@
+import { getRootElement } from "./rootElement";
+
 let panel: HTMLElement | null = null;
 let logList: HTMLElement | null = null;
 let visible = false;
@@ -30,7 +32,7 @@ function ensurePanel(): void {
   logList.className = "debug-log-list";
 
   panel.append(header, logList);
-  document.body.appendChild(panel);
+  getRootElement().appendChild(panel);
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "`" && !e.ctrlKey && !e.metaKey && !e.altKey) {

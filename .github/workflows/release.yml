@@ -1,0 +1,46 @@
+name: Release HACS Panel
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build:panel
+
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.HACS_DEPLOY_KEY }}
+
+      - name: Push to distribution repo
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          git clone --depth 1 git@github.com:knowald/ha-hypertree-hacs.git dist-hacs
+
+          cp dist-panel/hypertree.js dist-hacs/custom_components/ha_hypertree/hypertree.js
+
+          cd dist-hacs
+          jq --arg v "$VERSION" '.version = $v' custom_components/ha_hypertree/manifest.json > tmp.json && mv tmp.json custom_components/ha_hypertree/manifest.json
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "release ${VERSION}" || exit 0
+          git tag "v${VERSION}"
+          git push origin master --tags
+
+      - uses: softprops/action-gh-release@v2

@@ -1,6 +1,7 @@
 import type { TreeNode } from "../tree/types";
 import type { HaState } from "../ha/types";
 import type { Visualization } from "./types";
+import { getRootElement } from "../rootElement";
 
 export function createSwitcher(
   container: HTMLElement,
@@ -11,7 +12,7 @@ export function createSwitcher(
 ): { updateStates(s: Map<string, HaState>): void; onEntityChanged(id: string): void } {
   const bar = document.createElement("div");
   bar.id = "viz-bar";
-  document.body.appendChild(bar);
+  getRootElement().appendChild(bar);
 
   const vizContainer = document.createElement("div");
   vizContainer.id = "viz-container";

@@ -1,4 +1,5 @@
 import type { HaState } from "../ha/types";
+import { getRootElement } from "../rootElement";
 
 let tooltipEl: HTMLDivElement | null = null;
 
@@ -6,7 +7,7 @@ function ensureTooltip(): HTMLDivElement {
   if (!tooltipEl) {
     tooltipEl = document.createElement("div");
     tooltipEl.className = "tooltip";
-    document.body.appendChild(tooltipEl);
+    getRootElement().appendChild(tooltipEl);
   }
   return tooltipEl;
 }
