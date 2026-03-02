@@ -9,7 +9,7 @@ export function createSwitcher(
   root: TreeNode,
   states: Map<string, HaState>,
   defaultViz?: string
-): { updateStates(s: Map<string, HaState>): void; onEntityChanged(id: string): void } {
+): { updateStates(s: Map<string, HaState>): void; onEntityChanged(id: string, oldValue?: string): void } {
   const bar = document.createElement("div");
   bar.id = "viz-bar";
   getRootElement().appendChild(bar);
@@ -61,9 +61,9 @@ export function createSwitcher(
         activeViz.updateStates(s);
       }
     },
-    onEntityChanged(id: string): void {
+    onEntityChanged(id: string, oldValue?: string): void {
       if (activeViz?.onEntityChanged) {
-        activeViz.onEntityChanged(id);
+        activeViz.onEntityChanged(id, oldValue);
       }
     },
   };

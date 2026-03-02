@@ -2,6 +2,7 @@ import { getRootElement } from "./rootElement";
 
 let panel: HTMLElement | null = null;
 let logList: HTMLElement | null = null;
+let fpsEl: HTMLElement | null = null;
 let visible = false;
 
 function ensurePanel(): void {
@@ -28,10 +29,14 @@ function ensurePanel(): void {
 
   header.append(title, clearBtn, closeBtn);
 
+  fpsEl = document.createElement("div");
+  fpsEl.className = "debug-fps";
+  fpsEl.textContent = "FPS: --";
+
   logList = document.createElement("div");
   logList.className = "debug-log-list";
 
-  panel.append(header, logList);
+  panel.append(header, fpsEl, logList);
   getRootElement().appendChild(panel);
 
   document.addEventListener("keydown", (e) => {
@@ -84,6 +89,25 @@ export function debugLog(category: string, message: string, data?: string): void
 
   while (logList.children.length > 500) {
     logList.removeChild(logList.firstChild!);
+  }
+}
+
+let frameCount = 0;
+let lastFpsTime = 0;
+let lastFrameTime = 0;
+
+export function updateFps(now: number): void {
+  if (!fpsEl) return;
+  frameCount++;
+  const frameTime = lastFrameTime ? now - lastFrameTime : 0;
+  lastFrameTime = now;
+
+  if (now - lastFpsTime >= 500) {
+    const elapsed = now - lastFpsTime;
+    const fps = Math.round((frameCount / elapsed) * 1000);
+    fpsEl.textContent = `FPS: ${fps}  |  Frame: ${frameTime.toFixed(1)}ms`;
+    frameCount = 0;
+    lastFpsTime = now;
   }
 }
 

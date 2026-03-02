@@ -7,6 +7,7 @@ import { createTransform, applyWheel, screenToWorld, type ZoomTransform } from "
 import { buildTree, buildTreeByDevice } from "../tree/build";
 import { loadCredentials } from "../login";
 import { getRootElement } from "../rootElement";
+import { updateFps } from "../debug";
 
 interface FNode {
   tree: TreeNode;
@@ -33,6 +34,8 @@ type GroupMode = "area" | "domain";
 type StructureMode = "domain" | "device";
 
 let canvas: HTMLCanvasElement | null = null;
+let glassLabels: HTMLDivElement[] = [];
+let glassContainer: HTMLDivElement | null = null;
 let ctx: CanvasRenderingContext2D | null = null;
 let settingsPanel: HTMLDivElement | null = null;
 let frame = 0;
@@ -59,7 +62,8 @@ interface ForceSettings {
   showHulls: boolean;
   showLabels: boolean;
   showEntities: boolean;
-  pulseUnavailable: boolean;
+  unavailableMode: UnavailableMode;
+  changedOnly: boolean;
   constellation: boolean;
   groupBy: GroupMode;
   structureMode: StructureMode;
@@ -73,6 +77,8 @@ interface ForceSettings {
   starEffect: StarEffect;
   labelSize: number;
   entityDotSize: number;
+  parentLabelZoom: number;
+  entityLabelZoom: number;
   repulsion: number;
   springLen: number;
   springK: number;
@@ -80,11 +86,13 @@ interface ForceSettings {
 }
 
 type StarEffect = "supernova" | "shooting-star" | "flare" | "pulse-wave" | "color-shift";
+type UnavailableMode = "normal" | "pulse" | "hidden";
 const defaults: ForceSettings = {
   showHulls: false,
   showLabels: true,
   showEntities: true,
-  pulseUnavailable: true,
+  unavailableMode: "pulse",
+  changedOnly: true,
   constellation: false,
   groupBy: "area",
   structureMode: "domain",
@@ -98,6 +106,8 @@ const defaults: ForceSettings = {
   starEffect: "supernova",
   labelSize: 16,
   entityDotSize: 16,
+  parentLabelZoom: 1.5,
+  entityLabelZoom: 2.5,
   repulsion: 3000,
   springLen: 64,
   springK: 0.035,
@@ -107,17 +117,26 @@ const defaults: ForceSettings = {
 function loadSettings(): ForceSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (raw) return { ...defaults, ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      // Migrate old boolean pulseUnavailable to unavailableMode
+      if ("pulseUnavailable" in parsed && !("unavailableMode" in parsed)) {
+        parsed.unavailableMode = parsed.pulseUnavailable ? "pulse" : "normal";
+        delete parsed.pulseUnavailable;
+      }
+      return { ...defaults, ...parsed };
+    }
   } catch { /* ignore */ }
   return { ...defaults };
 }
 
 function saveSettings(): void {
   const s: ForceSettings = {
-    showHulls, showLabels, showEntities, pulseUnavailable, constellation, groupBy, structureMode,
+    showHulls, showLabels, showEntities, unavailableMode, changedOnly, constellation, groupBy, structureMode,
     starSize, glowIntensity, twinkleSpeed, lineGlow, glowBrightness,
     starEffect, parentGlowIntensity, effectScale,
-    labelSize, entityDotSize, repulsion, springLen, springK, damping,
+    labelSize, entityDotSize, parentLabelZoom, entityLabelZoom,
+    repulsion, springLen, springK, damping,
   };
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* ignore */ }
 }
@@ -126,7 +145,8 @@ const saved = loadSettings();
 let showHulls = saved.showHulls;
 let showLabels = saved.showLabels;
 let showEntities = saved.showEntities;
-let pulseUnavailable = saved.pulseUnavailable;
+let unavailableMode: UnavailableMode = saved.unavailableMode;
+let changedOnly = saved.changedOnly;
 let constellation = saved.constellation;
 let groupBy: GroupMode = saved.groupBy;
 let structureMode: StructureMode = saved.structureMode;
@@ -143,6 +163,8 @@ let starEffect: StarEffect = saved.starEffect;
 
 let labelSize = saved.labelSize;
 let entityDotSize = saved.entityDotSize;
+let parentLabelZoom = saved.parentLabelZoom;
+let entityLabelZoom = saved.entityLabelZoom;
 
 let hoveredNode: FNode | null = null;
 let searchQuery = "";
@@ -156,8 +178,6 @@ let damping = saved.damping;
 let alphaDecay = 0.998;
 let alpha = 1;
 
-const ENTITY_LABEL_ZOOM = 2.5;
-const DOMAIN_LABEL_ZOOM = 1.5;
 const GLOW_DURATION = 3000;
 
 // Star sprite cache: pre-rendered gradient stars keyed by "color|sizeCategory|glowParam"
@@ -259,6 +279,10 @@ export function createForceViz(registries: Registries, haUrl?: string): Visualiz
       canvas.style.height = "100%";
       container.appendChild(canvas);
 
+      glassContainer = document.createElement("div");
+      glassContainer.className = "glass-label-container";
+      container.appendChild(glassContainer);
+
       settingsPanel = createSettings(container);
 
       const obs = new ResizeObserver(() => resize());
@@ -289,6 +313,11 @@ export function createForceViz(registries: Registries, haUrl?: string): Visualiz
         canvas = null;
         ctx = null;
       }
+      if (glassContainer) {
+        glassContainer.remove();
+        glassContainer = null;
+        glassLabels = [];
+      }
       if (settingsPanel) {
         settingsPanel.remove();
         settingsPanel = null;
@@ -307,7 +336,11 @@ export function createForceViz(registries: Registries, haUrl?: string): Visualiz
       currentStates = states;
     },
 
-    onEntityChanged(entityId: string) {
+    onEntityChanged(entityId: string, oldValue?: string) {
+      if (changedOnly && oldValue !== undefined) {
+        const current = currentStates.get(entityId);
+        if (current && current.state === oldValue) return;
+      }
       const fn = entityNodeMap.get(entityId);
       if (fn) {
         glowTimestamps.set(fn, performance.now());
@@ -331,6 +364,16 @@ function rebuildWithStructure(): void {
 function reheat(): void {
   alpha = Math.max(alpha, 0.5);
   ensureLoop();
+}
+
+function makeSection(label: string): HTMLDivElement {
+  const section = document.createElement("div");
+  section.className = "force-section";
+  const header = document.createElement("div");
+  header.className = "force-section-header";
+  header.textContent = label;
+  section.appendChild(header);
+  return section;
 }
 
 function createSettings(container: HTMLElement): HTMLDivElement {
@@ -364,41 +407,80 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   });
   panel.appendChild(searchInput);
 
-  const toggles = document.createElement("div");
-  toggles.className = "force-toggles";
-  const hullGrouping = makeSelect("Hull grouping", ["area", "domain"], groupBy, (v) => {
+  // -- Display section --
+  const displaySection = makeSection("Display");
+  const displayToggles = document.createElement("div");
+  displayToggles.className = "force-toggles";
+  displayToggles.appendChild(makeToggle("Labels", showLabels, (v) => { showLabels = v; saveSettings(); }));
+  displayToggles.appendChild(makeToggle("Entities", showEntities, (v) => {
+    showEntities = v;
+    rebuildWithStructure();
+    saveSettings();
+  }));
+  displayToggles.appendChild(makeSelect("Unavailable", ["normal", "pulse", "hidden"], unavailableMode, (v) => {
+    const prev = unavailableMode;
+    unavailableMode = v as UnavailableMode;
+    if (v === "hidden" || prev === "hidden") rebuildWithStructure();
+    ensureLoop();
+    saveSettings();
+  }));
+  displayToggles.appendChild(makeToggle("Changed only", changedOnly, (v) => {
+    changedOnly = v;
+    saveSettings();
+  }));
+  displaySection.appendChild(displayToggles);
+  displaySection.appendChild(makeSlider("Label size", 4, 24, labelSize, 1, (v) => { labelSize = v; saveSettings(); }));
+  displaySection.appendChild(makeSlider("Parent label zoom", 0.5, 5, parentLabelZoom, 0.1, (v) => { parentLabelZoom = v; saveSettings(); }));
+  displaySection.appendChild(makeSlider("Entity label zoom", 0.5, 5, entityLabelZoom, 0.1, (v) => { entityLabelZoom = v; saveSettings(); }));
+  displaySection.appendChild(makeSlider("Entity dot size", 1, 16, entityDotSize, 0.5, (v) => {
+    entityDotSize = v;
+    for (const fn of fnodes) {
+      if (fn.tree.kind === "entity") fn.r = v;
+    }
+    saveSettings();
+  }));
+  panel.appendChild(displaySection);
+
+  // -- Mode section --
+  const modeSection = makeSection("Mode");
+  const modeToggles = document.createElement("div");
+  modeToggles.className = "force-toggles";
+
+  modeToggles.appendChild(makeSelect("Structure", ["domain", "device"], structureMode, (v) => {
+    structureMode = v as StructureMode;
+    rebuildWithStructure();
+    saveSettings();
+  }));
+
+  const hullGrouping = makeSelect("Grouping", ["area", "domain"], groupBy, (v) => {
     groupBy = v as GroupMode;
     rebuildClusters();
     saveSettings();
   });
   hullGrouping.hidden = !showHulls;
+  hullGrouping.className = "toggle-label force-sub-option";
 
   const hullToggle = makeToggle("Hulls", showHulls, (v) => {
     showHulls = v;
     hullGrouping.hidden = !v;
     if (v && constellation) {
       constellation = false;
-      starSliders.hidden = true;
+      constellationContent.hidden = true;
       constellationToggle.querySelector("input")!.checked = false;
       ensureLoop();
     }
     saveSettings();
   });
-  toggles.appendChild(hullToggle);
-  toggles.appendChild(makeToggle("Labels", showLabels, (v) => { showLabels = v; saveSettings(); }));
-  toggles.appendChild(makeToggle("Entities", showEntities, (v) => {
-    showEntities = v;
-    rebuildWithStructure();
-    saveSettings();
-  }));
-  toggles.appendChild(makeToggle("Pulse unavailable", pulseUnavailable, (v) => {
-    pulseUnavailable = v;
-    ensureLoop();
-    saveSettings();
-  }));
+  modeToggles.appendChild(hullToggle);
+  modeToggles.appendChild(hullGrouping);
+
+  const constellationContent = document.createElement("div");
+  constellationContent.className = "force-constellation-options";
+  constellationContent.hidden = !constellation;
+
   const constellationToggle = makeToggle("Constellation", constellation, (v) => {
     constellation = v;
-    starSliders.hidden = !v;
+    constellationContent.hidden = !v;
     if (v && showHulls) {
       showHulls = false;
       hullGrouping.hidden = true;
@@ -407,46 +489,31 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     ensureLoop();
     saveSettings();
   });
-  toggles.appendChild(constellationToggle);
-  toggles.appendChild(makeSelect("Structure", ["domain", "device"], structureMode, (v) => {
-    structureMode = v as StructureMode;
-    rebuildWithStructure();
-    saveSettings();
-  }));
-  toggles.appendChild(hullGrouping);
-  panel.appendChild(toggles);
+  modeToggles.appendChild(constellationToggle);
+  modeSection.appendChild(modeToggles);
 
-  const forceSliders = document.createElement("div");
-  forceSliders.className = "force-sliders";
-  forceSliders.appendChild(makeSlider("Repulsion", 100, 3000, repulsion, 10, (v) => { repulsion = v; reheat(); saveSettings(); }));
-  forceSliders.appendChild(makeSlider("Spring length", 10, 120, springLen, 1, (v) => { springLen = v; reheat(); saveSettings(); }));
-  forceSliders.appendChild(makeSlider("Spring stiffness", 0.005, 0.15, springK, 0.005, (v) => { springK = v; reheat(); saveSettings(); }));
-  forceSliders.appendChild(makeSlider("Damping", 0.5, 0.99, damping, 0.01, (v) => { damping = v; reheat(); saveSettings(); }));
-  forceSliders.appendChild(makeSlider("Label size", 4, 24, labelSize, 1, (v) => { labelSize = v; saveSettings(); }));
-  forceSliders.appendChild(makeSlider("Entity dot size", 1, 16, entityDotSize, 0.5, (v) => {
-    entityDotSize = v;
-    for (const fn of fnodes) {
-      if (fn.tree.kind === "entity") fn.r = v;
-    }
-    saveSettings();
-  }));
-  panel.appendChild(forceSliders);
-
-  const starSliders = document.createElement("div");
-  starSliders.className = "force-sliders";
-  starSliders.hidden = !constellation;
-  starSliders.appendChild(makeSlider("Glow brightness", 0, 3, glowBrightness, 0.1, (v) => { glowBrightness = v; saveSettings(); }));
-  starSliders.appendChild(makeSlider("Star size", 0.2, 3, starSize, 0.1, (v) => { starSize = v; saveSettings(); }));
-  starSliders.appendChild(makeSlider("Glow intensity", 0.2, 3, glowIntensity, 0.1, (v) => { glowIntensity = v; saveSettings(); }));
-  starSliders.appendChild(makeSlider("Parent glow", 0.2, 5, parentGlowIntensity, 0.1, (v) => { parentGlowIntensity = v; saveSettings(); }));
-  starSliders.appendChild(makeSlider("Effect scale", 0.5, 5, effectScale, 0.1, (v) => { effectScale = v; saveSettings(); }));
-  starSliders.appendChild(makeSlider("Twinkle speed", 0, 5, twinkleSpeed, 0.1, (v) => { twinkleSpeed = v; saveSettings(); }));
-  starSliders.appendChild(makeSlider("Line glow", 0, 3, lineGlow, 0.1, (v) => { lineGlow = v; saveSettings(); }));
-  starSliders.appendChild(makeSelect("Effect",
+  constellationContent.appendChild(makeSlider("Glow brightness", 0, 3, glowBrightness, 0.1, (v) => { glowBrightness = v; saveSettings(); }));
+  constellationContent.appendChild(makeSlider("Star size", 0.2, 3, starSize, 0.1, (v) => { starSize = v; saveSettings(); }));
+  constellationContent.appendChild(makeSlider("Glow intensity", 0.2, 3, glowIntensity, 0.1, (v) => { glowIntensity = v; saveSettings(); }));
+  constellationContent.appendChild(makeSlider("Parent glow", 0.2, 5, parentGlowIntensity, 0.1, (v) => { parentGlowIntensity = v; saveSettings(); }));
+  constellationContent.appendChild(makeSlider("Effect scale", 0.5, 5, effectScale, 0.1, (v) => { effectScale = v; saveSettings(); }));
+  constellationContent.appendChild(makeSlider("Twinkle speed", 0, 5, twinkleSpeed, 0.1, (v) => { twinkleSpeed = v; saveSettings(); }));
+  constellationContent.appendChild(makeSlider("Line glow", 0, 3, lineGlow, 0.1, (v) => { lineGlow = v; saveSettings(); }));
+  constellationContent.appendChild(makeSelect("Effect",
     ["supernova", "shooting-star", "flare", "pulse-wave", "color-shift"],
     starEffect, (v) => { starEffect = v as StarEffect; saveSettings(); }));
-  panel.appendChild(starSliders);
+  modeSection.appendChild(constellationContent);
+  panel.appendChild(modeSection);
 
+  // -- Physics section --
+  const physicsSection = makeSection("Physics");
+  physicsSection.appendChild(makeSlider("Repulsion", 100, 3000, repulsion, 10, (v) => { repulsion = v; reheat(); saveSettings(); }));
+  physicsSection.appendChild(makeSlider("Spring length", 10, 120, springLen, 1, (v) => { springLen = v; reheat(); saveSettings(); }));
+  physicsSection.appendChild(makeSlider("Spring stiffness", 0.005, 0.15, springK, 0.005, (v) => { springK = v; reheat(); saveSettings(); }));
+  physicsSection.appendChild(makeSlider("Damping", 0.5, 0.99, damping, 0.01, (v) => { damping = v; reheat(); saveSettings(); }));
+  panel.appendChild(physicsSection);
+
+  // -- Actions --
   const buttons = document.createElement("div");
   buttons.className = "force-buttons";
 
@@ -479,7 +546,8 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     showHulls = defaults.showHulls;
     showLabels = defaults.showLabels;
     showEntities = defaults.showEntities;
-    pulseUnavailable = defaults.pulseUnavailable;
+    unavailableMode = defaults.unavailableMode;
+    changedOnly = defaults.changedOnly;
     constellation = defaults.constellation;
     groupBy = defaults.groupBy;
     structureMode = defaults.structureMode;
@@ -493,6 +561,8 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     starEffect = defaults.starEffect;
     labelSize = defaults.labelSize;
     entityDotSize = defaults.entityDotSize;
+    parentLabelZoom = defaults.parentLabelZoom;
+    entityLabelZoom = defaults.entityLabelZoom;
     repulsion = defaults.repulsion;
     springLen = defaults.springLen;
     springK = defaults.springK;
@@ -500,7 +570,6 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     searchQuery = "";
     transform = createTransform();
     saveSettings();
-    // Rebuild panel to reflect reset values
     const container = wrapper.parentElement!;
     wrapper.remove();
     settingsPanel = createSettings(container);
@@ -626,7 +695,15 @@ function rebuildClusters(): void {
 
 function buildGraph(root: TreeNode): void {
   const allNodes = flatten(root);
-  const nodes = showEntities ? allNodes : allNodes.filter((n) => n.kind !== "entity");
+  const nodes = showEntities
+    ? (unavailableMode === "hidden"
+      ? allNodes.filter((n) => {
+          if (n.kind !== "entity" || !n.entityId) return true;
+          const state = currentStates.get(n.entityId);
+          return !(state && state.state === "unavailable");
+        })
+      : allNodes)
+    : allNodes.filter((n) => n.kind !== "entity");
   const map = new Map<TreeNode, FNode>();
 
   fnodes = nodes.map((n) => {
@@ -682,6 +759,8 @@ function resize(): void {
 function tick(): void {
   if (!canvas) return;
 
+  updateFps(performance.now());
+
   if (alpha > 0.001) {
     simulate();
     alpha *= alphaDecay;
@@ -689,7 +768,7 @@ function tick(): void {
 
   draw();
 
-  const needsAnimation = alpha > 0.001 || glowTimestamps.size > 0 || dragNode !== null || panning || constellation || pulseUnavailable;
+  const needsAnimation = alpha > 0.001 || glowTimestamps.size > 0 || dragNode !== null || panning || constellation || unavailableMode === "pulse";
   if (needsAnimation) {
     frame = requestAnimationFrame(tick);
   } else {
@@ -927,27 +1006,95 @@ function drawHull(ctx: CanvasRenderingContext2D, cluster: Cluster): void {
 }
 
 function drawLabels(ctx: CanvasRenderingContext2D): void {
-  const fontSize = labelSize / transform.k;
-  ctx.font = `${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+  const fontFamily = "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
+  const entityFontSize = labelSize / transform.k;
+  const parentFontSize = (labelSize * 1.4) / transform.k;
+  const pad = 3 / transform.k;
+  const radius = 3 / transform.k;
   ctx.textAlign = "center";
-  ctx.textBaseline = "top";
+  ctx.textBaseline = "alphabetic";
+
+  let glassIndex = 0;
 
   for (const n of fnodes) {
     const kind = n.tree.kind;
+    const isEntity = kind === "entity";
+    const isArea = kind === "area";
+    const isMiddle = kind === "domain" || kind === "device";
+    const isGlass = kind === "root" || isArea;
 
-    if (kind === "entity" && transform.k < ENTITY_LABEL_ZOOM) continue;
-    if ((kind === "domain" || kind === "device") && transform.k < DOMAIN_LABEL_ZOOM) continue;
+    if (isEntity && transform.k < entityLabelZoom) continue;
+    if (isMiddle && transform.k < parentLabelZoom) continue;
 
     let labelAlpha = 1;
-    if (kind === "entity") {
-      labelAlpha = Math.min(1, (transform.k - ENTITY_LABEL_ZOOM) / 0.5);
-    } else if (kind === "domain" || kind === "device") {
-      labelAlpha = Math.min(1, (transform.k - DOMAIN_LABEL_ZOOM) / 0.5);
+    if (isEntity) {
+      labelAlpha = Math.min(1, (transform.k - entityLabelZoom) / 0.5);
+    } else if (isMiddle) {
+      labelAlpha = Math.min(1, (transform.k - parentLabelZoom) / 0.5);
     }
 
-    ctx.fillStyle = kind === "entity" ? "#bbb" : "#e0e0e0";
-    ctx.globalAlpha = Math.max(0.3, labelAlpha);
-    ctx.fillText(n.tree.label, n.x, n.y + n.r + 2 / transform.k);
+    const alpha = Math.max(0.3, labelAlpha);
+
+    if (kind === "root") {
+      ctx.font = `700 ${parentFontSize * 1.2}px ${fontFamily}`;
+    } else if (isArea) {
+      ctx.font = `600 ${parentFontSize}px ${fontFamily}`;
+    } else if (isMiddle) {
+      ctx.font = `500 ${parentFontSize}px ${fontFamily}`;
+    } else {
+      ctx.font = `${entityFontSize}px ${fontFamily}`;
+    }
+
+    const labelY = n.y + n.r + 2 / transform.k;
+    const metrics = ctx.measureText(n.tree.label);
+    const ascent = metrics.actualBoundingBoxAscent;
+    const descent = metrics.actualBoundingBoxDescent;
+    const textH = ascent + descent;
+    const textY = labelY + ascent;
+
+    if (isGlass && glassContainer) {
+      // Position glass overlay div for root/area labels
+      if (glassIndex >= glassLabels.length) {
+        const div = document.createElement("div");
+        div.className = "glass-label";
+        glassContainer.appendChild(div);
+        glassLabels.push(div);
+      }
+      const div = glassLabels[glassIndex++];
+      const screenX = n.x * transform.k + transform.x;
+      const screenY = textY * transform.k + transform.y;
+      const screenFontSize = kind === "root" ? labelSize * 1.4 * 1.2 : labelSize * 1.4;
+      const weight = kind === "root" ? "700" : "600";
+      div.textContent = n.tree.label;
+      div.style.left = `${screenX}px`;
+      div.style.top = `${screenY}px`;
+      div.style.fontSize = `${screenFontSize}px`;
+      div.style.fontWeight = weight;
+      div.style.opacity = String(alpha);
+      div.style.display = "";
+    } else {
+      // Canvas roundRect background for domain/device/entity labels
+      ctx.globalAlpha = alpha * 0.5;
+      ctx.fillStyle = "#000000";
+      ctx.beginPath();
+      ctx.roundRect(
+        n.x - metrics.width / 2 - pad,
+        textY - ascent - pad,
+        metrics.width + pad * 2,
+        textH + pad * 2,
+        radius
+      );
+      ctx.fill();
+
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = isEntity ? "#bbb" : "#e0e0e0";
+      ctx.fillText(n.tree.label, n.x, textY);
+    }
+  }
+
+  // Hide unused glass labels
+  for (let i = glassIndex; i < glassLabels.length; i++) {
+    glassLabels[i].style.display = "none";
   }
 
   ctx.globalAlpha = 1;
@@ -1147,7 +1294,7 @@ function drawConstellation(ctx: CanvasRenderingContext2D, now: number): void {
   for (const fn of fnodes) {
     if (fn.tree.kind !== "entity") continue;
 
-    const unavail = pulseUnavailable && isUnavailable(fn);
+    const unavail = unavailableMode === "pulse" && isUnavailable(fn);
     const phase = fn.x * 0.1 + fn.y * 0.07;
     const twinkle = twinkleSpeed === 0 ? 1 : 0.5 + 0.5 * Math.sin(now * 0.003 * twinkleSpeed + phase);
     const pulse = twinkle * twinkle;
@@ -1445,7 +1592,7 @@ function isUnavailable(fn: FNode): boolean {
 }
 
 function drawUnavailablePulses(ctx: CanvasRenderingContext2D, now: number): void {
-  if (!pulseUnavailable) return;
+  if (unavailableMode !== "pulse") return;
 
   const pulse = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(now * 0.004));
 
@@ -1484,6 +1631,8 @@ function draw(): void {
     dpr * transform.x, dpr * transform.y
   );
 
+  if (glassContainer) glassContainer.style.display = showLabels ? "" : "none";
+
   if (constellation) {
     const now = performance.now();
     drawConstellation(ctx, now);
@@ -1511,7 +1660,7 @@ function draw(): void {
   }
 
   for (const n of fnodes) {
-    const unavail = pulseUnavailable && isUnavailable(n);
+    const unavail = unavailableMode === "pulse" && isUnavailable(n);
     ctx.globalAlpha = unavail ? 0.3 : 1;
     ctx.beginPath();
     ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);

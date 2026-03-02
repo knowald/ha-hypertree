@@ -34,7 +34,7 @@ interface StateChangedEvent {
 
 class HypertreePanel extends HTMLElement {
   private initialized = false;
-  private switcher: { updateStates(s: Map<string, HaState>): void; onEntityChanged(id: string): void } | null = null;
+  private switcher: { updateStates(s: Map<string, HaState>): void; onEntityChanged(id: string, oldValue?: string): void } | null = null;
   private states = new Map<string, HaState>();
   private container!: HTMLDivElement;
 
@@ -122,7 +122,7 @@ class HypertreePanel extends HTMLElement {
 
           this.states.set(newState.entity_id, newState);
           this.switcher?.updateStates(this.states);
-          this.switcher?.onEntityChanged(newState.entity_id);
+          this.switcher?.onEntityChanged(newState.entity_id, oldVal);
         }
       },
       { type: "subscribe_events", event_type: "state_changed" }

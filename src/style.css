@@ -240,14 +240,41 @@ body {
   color: var(--text);
   pointer-events: none;
   z-index: 1000;
-  max-width: 320px;
-  white-space: nowrap;
+  max-width: 420px;
+  word-break: break-word;
 }
 
 .tooltip-id {
   color: var(--text-muted);
   font-size: 0.75rem;
   font-family: monospace;
+}
+
+/* Glass labels (backdrop-blur overlays for root/area labels) */
+.glass-label-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 1;
+}
+
+.glass-label {
+  position: absolute;
+  transform: translateX(-50%);
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.15);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  color: #e0e0e0;
+  white-space: nowrap;
+  pointer-events: none;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.3;
 }
 
 /* Status bar */
@@ -453,45 +480,95 @@ body {
   background: var(--surface);
   color: var(--text-muted);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius);
+  width: 32px;
+  height: 32px;
   font-size: 1rem;
   cursor: pointer;
   line-height: 1;
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   margin-left: auto;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
 }
 
 .force-settings-toggle:hover {
   color: var(--text);
   border-color: var(--text-muted);
+  background: var(--bg);
+}
+
+.force-settings-open .force-settings-toggle {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .force-settings-body {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0.5rem 0.6rem;
-  margin-top: 4px;
-  max-width: 340px;
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  margin-top: 6px;
+  width: 300px;
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.6rem;
+}
+
+.force-settings-body[hidden] {
+  display: none;
+}
+
+.force-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+}
+
+.force-section-header {
+  font-size: 0.6rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 0.15rem;
 }
 
 .force-toggles {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.5rem 0.75rem;
+}
+
+.force-sub-option {
+  padding-left: 1.2rem;
+}
+
+.force-constellation-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-left: 0.4rem;
+  border-left: 2px solid var(--border);
+  margin-top: 0.25rem;
+}
+
+.force-constellation-options[hidden] {
+  display: none;
 }
 
 .force-select {
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+  padding: 0.15rem 0.35rem;
   font-size: 0.7rem;
   margin-left: 0.25rem;
   cursor: pointer;
@@ -500,21 +577,6 @@ body {
 
 .force-select:focus {
   border-color: var(--accent);
-}
-
-.force-sliders {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  border-top: 1px solid var(--border);
-  padding-top: 0.4rem;
-}
-
-.force-sliders[hidden] {
-  display: none;
-  padding-top: 0.4rem;
-  margin-top: 0.1rem;
 }
 
 .force-slider-label {
@@ -545,11 +607,11 @@ body {
 
 .force-search {
   width: 100%;
-  padding: 0.3rem 0.5rem;
+  padding: 0.35rem 0.5rem;
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: 4px;
   font-size: 0.75rem;
   outline: none;
   box-sizing: border-box;
@@ -566,20 +628,22 @@ body {
 .force-buttons {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  margin-top: 0.4rem;
+  gap: 0.3rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
 }
 
 .force-reset-btn {
   width: 100%;
-  padding: 0.3rem 0;
+  padding: 0.35rem 0;
   background: var(--bg);
   color: var(--text-muted);
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: 4px;
   font-size: 0.7rem;
   cursor: pointer;
   margin: 0;
+  transition: color 0.15s, border-color 0.15s;
 }
 
 .force-reset-btn:hover {
@@ -653,6 +717,16 @@ body {
 
 #debug-console.visible {
   display: flex;
+}
+
+.debug-fps {
+  padding: 3px 8px;
+  background: #111;
+  border-bottom: 1px solid var(--border);
+  color: #4fc3f7;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 0.7rem;
+  flex-shrink: 0;
 }
 
 .debug-header {

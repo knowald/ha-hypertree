@@ -134,7 +134,7 @@ interface StateChangedEvent {
 function subscribeToStates(
   connection: Connection,
   states: Map<string, HaState>,
-  switcher: { updateStates(s: Map<string, HaState>): void; onEntityChanged(id: string): void }
+  switcher: { updateStates(s: Map<string, HaState>): void; onEntityChanged(id: string, oldValue?: string): void }
 ) {
   // subscribeMessage callback receives message.event (unwrapped by the library)
   connection.subscribeMessage<StateChangedEvent>(
@@ -148,7 +148,7 @@ function subscribeToStates(
 
         states.set(newState.entity_id, newState);
         switcher.updateStates(states);
-        switcher.onEntityChanged(newState.entity_id);
+        switcher.onEntityChanged(newState.entity_id, oldVal);
       }
     },
     { type: "subscribe_events", event_type: "state_changed" }
