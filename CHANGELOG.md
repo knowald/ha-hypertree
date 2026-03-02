@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.6.0 - 2026-03-02
+
+### Added
+
+- Add settings panel sections: Display, Mode, Physics, Actions with headers
+- Add unavailable entity display modes: normal, pulse, or hidden from tree
+- Add changed-only toggle to skip glow on identical state values
+- Add tiered label hierarchy: root > area > domain/device > entity with distinct sizes and weights
+- Add configurable label zoom thresholds for parent and entity labels
+- Add semi-transparent rounded rect backgrounds behind canvas labels
+- Add backdrop-filter glass overlays for root and area labels
+- Add FPS counter and frame time display in debug console
+- Add constellation options nested under toggle with left border accent
+
+### Changed
+
+- Reorganize settings panel into grouped sections with visual separation
+- Widen tooltip to 420px with word wrapping for long entity names
+- Settings toggle button: square shape with active state accent color
+- Settings body: fixed 300px width, max-height scroll, hidden attribute fix
+
+### Removed
+
+- Remove hardcoded label zoom constants in favor of configurable sliders
+
 ## 0.5.1 - 2026-03-02
 
 ### Added
