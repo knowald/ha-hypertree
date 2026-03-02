@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0 - 2026-03-02
+
+### Added
+
+- Add HACS custom panel integration with Shadow DOM web component
+- Add dual build: standalone webapp and HA panel (`npm run build:panel`)
+- Add root element abstraction for Shadow DOM compatibility
+- Add release workflow to publish panel to distribution repo
+
 ## 0.4.1 - 2026-03-02
 
 ### Added
