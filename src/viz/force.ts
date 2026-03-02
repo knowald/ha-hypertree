@@ -75,6 +75,7 @@ interface ForceSettings {
   springLen: number;
   springK: number;
   damping: number;
+  hiddenAreaIds: string[];
 }
 
 type StarEffect = "supernova" | "shooting-star" | "flare" | "pulse-wave" | "color-shift";
@@ -100,6 +101,7 @@ const defaults: ForceSettings = {
   springLen: 64,
   springK: 0.035,
   damping: 0.8,
+  hiddenAreaIds: [],
 };
 
 function loadSettings(): ForceSettings {
@@ -116,6 +118,7 @@ function saveSettings(): void {
     starSize, glowIntensity, twinkleSpeed, lineGlow, glowBrightness,
     starEffect, parentGlowIntensity, effectScale,
     labelSize, entityDotSize, repulsion, springLen, springK, damping,
+    hiddenAreaIds: [...hiddenAreas],
   };
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* ignore */ }
 }
@@ -128,6 +131,7 @@ let pulseUnavailable = saved.pulseUnavailable;
 let constellation = saved.constellation;
 let groupBy: GroupMode = saved.groupBy;
 let structureMode: StructureMode = saved.structureMode;
+let hiddenAreas: Set<string> = new Set(saved.hiddenAreaIds ?? []);
 
 let starSize = saved.starSize;
 let glowIntensity = saved.glowIntensity;
@@ -323,6 +327,7 @@ function rebuildWithStructure(): void {
 
   alpha = 1;
   buildGraph(root);
+  ensureLoop();
 }
 
 function reheat(): void {
@@ -413,6 +418,10 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   toggles.appendChild(hullGrouping);
   panel.appendChild(toggles);
 
+  if (currentRegistries && currentRegistries.areas.length > 0) {
+    panel.appendChild(makeAreaFilter(currentRegistries.areas));
+  }
+
   const forceSliders = document.createElement("div");
   forceSliders.className = "force-sliders";
   forceSliders.appendChild(makeSlider("Repulsion", 100, 3000, repulsion, 10, (v) => { repulsion = v; reheat(); saveSettings(); }));
@@ -494,6 +503,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     springLen = defaults.springLen;
     springK = defaults.springK;
     damping = defaults.damping;
+    hiddenAreas.clear();
     searchQuery = "";
     transform = createTransform();
     saveSettings();
@@ -508,6 +518,97 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   panel.appendChild(buttons);
 
   return wrapper;
+}
+
+function makeAreaFilter(areas: { area_id: string; name: string }[]): HTMLDivElement {
+  const wrapper = document.createElement("div");
+  wrapper.style.cssText = "position:relative; margin-top:4px;";
+
+  const btn = document.createElement("button");
+  btn.className = "force-reset-btn";
+  btn.style.cssText = "width:100%; text-align:left; font-size:0.75rem;";
+
+  const updateBtnLabel = () => {
+    const visible = areas.length - hiddenAreas.size;
+    btn.textContent = hiddenAreas.size === 0
+      ? `Areas (all ${areas.length})`
+      : `Areas (${visible}/${areas.length} visible)`;
+  };
+  updateBtnLabel();
+
+  const dropdown = document.createElement("div");
+  dropdown.style.cssText = `
+    display:none; position:absolute; top:100%; left:0; right:0;
+    margin-top:4px; background:var(--surface, #1e1e2e);
+    border:1px solid var(--border, #444); border-radius:6px;
+    padding:6px 0; max-height:40vh; overflow-y:auto;
+    z-index:500; box-shadow:0 4px 16px rgba(0,0,0,0.5);
+  `;
+
+  // All / None header
+  const header = document.createElement("div");
+  header.style.cssText = "display:flex; gap:4px; padding:4px 8px 6px; border-bottom:1px solid var(--border,#444); margin-bottom:4px;";
+
+  const allBtn = document.createElement("button");
+  allBtn.textContent = "All";
+  allBtn.className = "force-reset-btn";
+  allBtn.style.cssText = "flex:1; font-size:0.68rem; padding:2px 6px;";
+  allBtn.addEventListener("click", () => {
+    hiddenAreas.clear();
+    dropdown.querySelectorAll<HTMLInputElement>("input[type=checkbox]").forEach(cb => { cb.checked = true; });
+    updateBtnLabel();
+    saveSettings();
+    rebuildWithStructure();
+  });
+
+  const noneBtn = document.createElement("button");
+  noneBtn.textContent = "None";
+  noneBtn.className = "force-reset-btn";
+  noneBtn.style.cssText = allBtn.style.cssText;
+  noneBtn.addEventListener("click", () => {
+    areas.forEach(a => hiddenAreas.add(`area:${a.area_id}`));
+    dropdown.querySelectorAll<HTMLInputElement>("input[type=checkbox]").forEach(cb => { cb.checked = false; });
+    updateBtnLabel();
+    saveSettings();
+    rebuildWithStructure();
+  });
+
+  header.appendChild(allBtn);
+  header.appendChild(noneBtn);
+  dropdown.appendChild(header);
+
+  for (const area of areas) {
+    const areaKey = `area:${area.area_id}`;
+    const item = document.createElement("label");
+    item.style.cssText = "display:flex; align-items:center; gap:6px; padding:3px 10px; font-size:0.75rem; cursor:pointer;";
+    item.addEventListener("mouseover", () => { item.style.background = "rgba(255,255,255,0.06)"; });
+    item.addEventListener("mouseout",  () => { item.style.background = ""; });
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !hiddenAreas.has(areaKey);
+    cb.addEventListener("change", () => {
+      if (cb.checked) hiddenAreas.delete(areaKey);
+      else hiddenAreas.add(areaKey);
+      updateBtnLabel();
+      saveSettings();
+      rebuildWithStructure();
+    });
+
+    item.appendChild(cb);
+    item.appendChild(document.createTextNode(area.name));
+    dropdown.appendChild(item);
+  }
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    dropdown.style.display = dropdown.style.display === "block" ? "none" : "block";
+  });
+  document.addEventListener("click", () => { dropdown.style.display = "none"; });
+
+  wrapper.appendChild(btn);
+  wrapper.appendChild(dropdown);
+  return wrapper as unknown as HTMLDivElement;
 }
 
 function makeToggle(label: string, initial: boolean, onChange: (v: boolean) => void): HTMLLabelElement {
@@ -623,7 +724,17 @@ function rebuildClusters(): void {
 
 function buildGraph(root: TreeNode): void {
   const allNodes = flatten(root);
-  const nodes = showEntities ? allNodes : allNodes.filter((n) => n.kind !== "entity");
+
+  // Apply area filter: hide area nodes and all their descendants
+  const areaFiltered = hiddenAreas.size > 0
+    ? allNodes.filter((n) => {
+        if (n.kind === "area") return !hiddenAreas.has(n.id);
+        const area = findAncestor(n, "area");
+        return area === null || !hiddenAreas.has(area.id);
+      })
+    : allNodes;
+
+  const nodes = showEntities ? areaFiltered : areaFiltered.filter((n) => n.kind !== "entity");
   const map = new Map<TreeNode, FNode>();
 
   fnodes = nodes.map((n) => {
@@ -680,7 +791,15 @@ function tick(): void {
   if (!canvas) return;
 
   if (alpha > 0.001) {
-    simulate();
+    try {
+      simulate();
+    } catch {
+      // Jitter all free nodes slightly to break coincident-position deadlocks
+      for (const fn of fnodes) {
+        if (!fn.fx) fn.x += (Math.random() - 0.5) * 0.1;
+        if (!fn.fy) fn.y += (Math.random() - 0.5) * 0.1;
+      }
+    }
     alpha *= alphaDecay;
   }
 
@@ -730,6 +849,13 @@ function quadInsert(quad: QuadNode, fn: FNode): void {
   if (quad.body) {
     const existing = quad.body;
     quad.body = null;
+    // Guard: if the cell is too small to subdivide (coincident nodes), keep first and jitter new node
+    if (quad.x1 - quad.x0 < 1e-6) {
+      if (!fn.fx) fn.x += (Math.random() - 0.5) * 0.01;
+      if (!fn.fy) fn.y += (Math.random() - 0.5) * 0.01;
+      quad.body = existing; // restore original occupant
+      return;
+    }
     quadPush(quad, existing);
   }
   quadPush(quad, fn);
