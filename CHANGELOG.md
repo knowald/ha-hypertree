@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.1 - 2026-03-02
+
+### Added
+
+- Add justfile with dev, build, cert, and dev-https commands
+- Add local HTTPS dev server support via mkcert certificates
+
+### Changed
+
+- Replace pnpm with npm in all docs and scripts
+- Improve protocol mismatch warning wording on login form
+
+### Fixed
+
+- Fix crash when transparent() receives shorthand hex colors like #666
+
 ## 0.4.0 - 2026-03-02
 
 ### Added

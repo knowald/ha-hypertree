@@ -18,7 +18,7 @@ export function renderLoginForm(
       <p>Connect to your Home Assistant instance</p>
       <label>
         Home Assistant URL
-        <input type="url" id="ha-url" placeholder="http://homeassistant.local:8123"
+        <input type="url" id="ha-url" placeholder="https://homeassistant.local:8123"
                value="${saved?.url ?? ""}" required />
       </label>
       <label>
@@ -64,8 +64,10 @@ export function renderLoginForm(
     if (pageIsHttps && targetIsHttp) {
       const httpPage = location.href.replace(/^https:/, "http:");
       protocolWarning.innerHTML =
-        `Connecting to an HTTP server from an HTTPS page is blocked by your browser. ` +
-        `<a href="${httpPage}">Switch to HTTP</a> to connect to this instance.`;
+        `Your browser blocks insecure WebSocket connections from HTTPS pages. ` +
+        `Try <a href="${httpPage}">switching to HTTP</a> to connect to a local HA instance. ` +
+        `If your browser redirects you back to HTTPS, manually replace ` +
+        `<code>https</code> with <code>http</code> in your address bar.`;
       protocolWarning.hidden = false;
     } else {
       protocolWarning.hidden = true;

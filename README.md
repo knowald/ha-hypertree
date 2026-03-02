@@ -32,8 +32,8 @@ Credentials are saved in your browser's local storage for auto-reconnect.
 ## Running
 
 ```sh
-pnpm install
-pnpm dev
+npm install
+npm run dev
 ```
 
 Then open the URL shown by Vite (usually `http://localhost:5173`).
@@ -41,11 +41,21 @@ Then open the URL shown by Vite (usually `http://localhost:5173`).
 ### Production build
 
 ```sh
-pnpm build
-pnpm preview
+npm run build
+npm run preview
 ```
 
 The built files in `dist/` can be served by any static file server.
+
+### Local HTTPS
+
+To test the protocol mismatch warning or connect to an HTTPS HA instance from localhost, generate a local certificate with [mkcert](https://github.com/FiloSottile/mkcert) and start the dev server over HTTPS:
+
+```sh
+just dev-https
+```
+
+The dev server detects `.certs/` automatically and serves over HTTPS when the certificates are present.
 
 ## Interactions
 
