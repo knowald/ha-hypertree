@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.0 - 2026-03-03
+
+### Added
+
+- Add automation edge visualization with colored lines per relation type (trigger, condition, action) and hover-to-highlight
+- Add automation tooltip showing which automations reference an entity and vice versa
+- Add "Automation entities only" filter to show only entities referenced by automations
+- Add "Appear on change" mode where nodes start hidden and wave in with staggered animation as state changes arrive
+- Add state change counter per entity, shown in tooltip
+- Add Automations settings section with edge toggle and automation-only filter
+- Add `src/ha/automation.ts` module for fetching automation configs and extracting entity references
+
+### Changed
+
+- Restructure Mode section with parent-child grouping: Entities, Hulls, Constellation each have indented sub-options
+- Move Mode section to top of settings panel
+- Move "Entities" toggle and "Unavailable" select from Display to Mode as parent/child
+- Disable dependent settings contextually (e.g., automation-only requires loaded data, appear-on-change locks entities on)
+- Accept `connection` parameter in `createForceViz` for automation WebSocket calls
+- Split `rebuildWithStructure` into `rebuildGraph` (filter-only) and `rebuildWithStructure` (reloads automation data)
+- Pass optional extra HTML to tooltip for force-specific content
+
 ## 0.6.1 - 2026-03-02
 
 ### Added
