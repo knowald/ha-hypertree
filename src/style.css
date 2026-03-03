@@ -525,18 +525,52 @@ body {
 .force-section {
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
   border-top: 1px solid var(--border);
   padding-top: 0.5rem;
 }
 
 .force-section-header {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  width: 100%;
+  padding: 0;
+  margin: 0;
+  background: none;
+  border: none;
   font-size: 0.6rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--text-muted);
-  margin-bottom: 0.15rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.force-section-header:hover {
+  color: var(--text);
+}
+
+.force-section-arrow {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+
+.force-section-arrow.open {
+  transform: rotate(90deg);
+}
+
+.force-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.4rem;
+}
+
+.force-section-body[hidden] {
+  display: none;
 }
 
 .force-toggles {
@@ -624,6 +658,52 @@ body {
   font-size: 0.65rem;
   color: var(--text-muted);
   margin-left: 0.25rem;
+}
+
+.force-color-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.2rem;
+}
+
+.force-color-swatch {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  cursor: pointer;
+  padding: 0.15rem 0.2rem;
+  border-radius: 3px;
+  transition: background 0.15s;
+}
+
+.force-color-swatch:hover {
+  background: var(--border);
+}
+
+.force-color-swatch input[type="color"] {
+  position: absolute;
+  width: 0;
+  height: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.force-color-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.force-color-name {
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .force-buttons {

@@ -3,7 +3,7 @@ import type { Visualization } from "./types";
 import type { TreeNode } from "../tree/types";
 import type { HaState, Registries } from "../ha/types";
 import { color, showTip, hideTip, flatten } from "./shared";
-import { randomizeColors, resetColors } from "../render/colors";
+import { randomizeColors, resetColors, getDomainColors, setDomainColors, setDomainColor, domainList } from "../render/colors";
 import { createTransform, applyWheel, screenToWorld, type ZoomTransform } from "./zoom";
 import { buildTree, buildTreeByDevice } from "../tree/build";
 import { loadCredentials } from "../login";
@@ -20,6 +20,7 @@ interface FNode {
   fx: number | null;
   fy: number | null;
   r: number;
+  phase: number;
 }
 
 interface Cluster {
@@ -75,8 +76,10 @@ interface ForceSettings {
   parentGlowIntensity: number;
   effectScale: number;
   twinkleSpeed: number;
+  twinkleSize: number;
   lineGlow: number;
   glowBrightness: number;
+  glowSize: number;
   starEffect: StarEffect;
   labelSize: number;
   entityDotSize: number;
@@ -88,6 +91,7 @@ interface ForceSettings {
   damping: number;
   automationOnly: boolean;
   appearOnChange: boolean;
+  backgroundColor: string;
 }
 
 type StarEffect = "supernova" | "shooting-star" | "flare" | "pulse-wave" | "color-shift";
@@ -107,8 +111,10 @@ const defaults: ForceSettings = {
   parentGlowIntensity: 0.2,
   effectScale: 2,
   twinkleSpeed: 0.1,
+  twinkleSize: 0,
   lineGlow: 0.3,
   glowBrightness: 2,
+  glowSize: 8,
   starEffect: "supernova",
   labelSize: 16,
   entityDotSize: 16,
@@ -119,6 +125,7 @@ const defaults: ForceSettings = {
   springK: 0.035,
   damping: 0.8,
   automationOnly: false,
+  backgroundColor: "#000000",
   appearOnChange: false,
 };
 
@@ -141,11 +148,11 @@ function loadSettings(): ForceSettings {
 function saveSettings(): void {
   const s: ForceSettings = {
     showHulls, showLabels, showEntities, showAutomationEdges, unavailableMode, changedOnly, constellation, groupBy, structureMode,
-    starSize, glowIntensity, twinkleSpeed, lineGlow, glowBrightness,
+    starSize, glowIntensity, twinkleSpeed, twinkleSize, lineGlow, glowBrightness, glowSize,
     starEffect, parentGlowIntensity, effectScale,
     labelSize, entityDotSize, parentLabelZoom, entityLabelZoom,
     repulsion, springLen, springK, damping,
-    automationOnly, appearOnChange,
+    automationOnly, appearOnChange, backgroundColor,
   };
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* ignore */ }
 }
@@ -166,8 +173,10 @@ let glowIntensity = saved.glowIntensity;
 let parentGlowIntensity = saved.parentGlowIntensity;
 let effectScale = saved.effectScale;
 let twinkleSpeed = saved.twinkleSpeed;
+let twinkleSize = saved.twinkleSize;
 let lineGlow = saved.lineGlow;
 let glowBrightness = saved.glowBrightness;
+let glowSize = saved.glowSize;
 
 let starEffect: StarEffect = saved.starEffect;
 
@@ -177,6 +186,7 @@ let parentLabelZoom = saved.parentLabelZoom;
 let entityLabelZoom = saved.entityLabelZoom;
 
 let hoveredNode: FNode | null = null;
+let hoverStartTime = 0;
 let searchQuery = "";
 let didDrag = false;
 let contextMenu: HTMLElement | null = null;
@@ -190,6 +200,7 @@ let alpha = 1;
 
 let automationOnly = saved.automationOnly;
 let appearOnChange = saved.appearOnChange;
+let backgroundColor = saved.backgroundColor;
 let revealedNodes: Set<string> = new Set();
 let stateChangeCounts: Map<string, number> = new Map();
 let allTreeNodesById: Map<string, TreeNode> = new Map();
@@ -242,42 +253,60 @@ function getStarSprite(nodeCol: string, intensity: number): { canvas: OffscreenC
   const oc = new OffscreenCanvas(spritePixels, spritePixels);
   const sctx = oc.getContext("2d")!;
 
-  // Outer glow
+  // Outer glow (tighter falloff)
   const outerGlow = sctx.createRadialGradient(center, center, 0, center, center, haloR);
   outerGlow.addColorStop(0, nodeCol);
-  outerGlow.addColorStop(0.25, nodeCol);
+  outerGlow.addColorStop(0.15, nodeCol);
+  outerGlow.addColorStop(0.5, transparent(nodeCol));
   outerGlow.addColorStop(1, transparent(nodeCol));
-  sctx.globalAlpha = 0.6 * intensity;
+  sctx.globalAlpha = 0.7 * intensity;
   sctx.fillStyle = outerGlow;
   sctx.beginPath();
   sctx.arc(center, center, haloR, 0, Math.PI * 2);
   sctx.fill();
 
-  // Inner glow
+  // Inner glow (brighter, tighter)
   const innerGlow = sctx.createRadialGradient(center, center, 0, center, center, innerR);
   innerGlow.addColorStop(0, "#fff");
-  innerGlow.addColorStop(0.3, nodeCol);
+  innerGlow.addColorStop(0.2, "#fff");
+  innerGlow.addColorStop(0.5, nodeCol);
   innerGlow.addColorStop(1, transparent(nodeCol));
-  sctx.globalAlpha = 0.8 * intensity;
+  sctx.globalAlpha = 0.9 * intensity;
   sctx.fillStyle = innerGlow;
   sctx.beginPath();
   sctx.arc(center, center, innerR, 0, Math.PI * 2);
   sctx.fill();
 
-  // Core dot
+  // Core dot (larger)
   sctx.globalAlpha = 1;
   sctx.fillStyle = "#fff";
   sctx.beginPath();
-  sctx.arc(center, center, coreR, 0, Math.PI * 2);
+  sctx.arc(center, center, coreR * 1.8, 0, Math.PI * 2);
   sctx.fill();
 
-  // Cross spikes
-  sctx.strokeStyle = nodeCol;
-  sctx.globalAlpha = 0.6;
-  sctx.lineWidth = 1;
+  // Cross spikes (brighter, thicker)
+  const spikeGrad = sctx.createLinearGradient(center - spikeLen, center, center + spikeLen, center);
+  spikeGrad.addColorStop(0, transparent(nodeCol));
+  spikeGrad.addColorStop(0.3, nodeCol);
+  spikeGrad.addColorStop(0.5, "#fff");
+  spikeGrad.addColorStop(0.7, nodeCol);
+  spikeGrad.addColorStop(1, transparent(nodeCol));
+  sctx.strokeStyle = spikeGrad;
+  sctx.globalAlpha = 0.8;
+  sctx.lineWidth = 1.5;
   sctx.beginPath();
   sctx.moveTo(center - spikeLen, center);
   sctx.lineTo(center + spikeLen, center);
+  sctx.stroke();
+
+  const vSpikeGrad = sctx.createLinearGradient(center, center - spikeLen, center, center + spikeLen);
+  vSpikeGrad.addColorStop(0, transparent(nodeCol));
+  vSpikeGrad.addColorStop(0.3, nodeCol);
+  vSpikeGrad.addColorStop(0.5, "#fff");
+  vSpikeGrad.addColorStop(0.7, nodeCol);
+  vSpikeGrad.addColorStop(1, transparent(nodeCol));
+  sctx.strokeStyle = vSpikeGrad;
+  sctx.beginPath();
   sctx.moveTo(center, center - spikeLen);
   sctx.lineTo(center, center + spikeLen);
   sctx.stroke();
@@ -484,12 +513,15 @@ function insertRevealedNode(nodeId: string): void {
     : (treeNode.kind === "domain" || treeNode.kind === "device") ? 6
     : entityDotSize;
 
+  let hash = 0;
+  for (let i = 0; i < treeNode.id.length; i++) hash = ((hash << 5) - hash + treeNode.id.charCodeAt(i)) | 0;
   const fn: FNode = {
     tree: treeNode,
     x: 0, y: 0,
     vx: 0, vy: 0,
     fx: null, fy: null,
     r,
+    phase: (hash & 0xffff) / 0xffff * Math.PI * 2,
   };
 
   // Position near parent if it exists in the graph
@@ -526,14 +558,42 @@ function reheat(): void {
   ensureLoop();
 }
 
-function makeSection(label: string): HTMLDivElement {
+interface Section {
+  el: HTMLDivElement;
+  body: HTMLDivElement;
+}
+
+function makeSection(label: string, startOpen = true): Section {
   const section = document.createElement("div");
   section.className = "force-section";
-  const header = document.createElement("div");
+
+  const header = document.createElement("button");
   header.className = "force-section-header";
-  header.textContent = label;
+  header.type = "button";
+
+  const arrow = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  arrow.setAttribute("viewBox", "0 0 10 10");
+  arrow.setAttribute("class", "force-section-arrow");
+  if (startOpen) arrow.classList.add("open");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M3 2l4 3-4 3z");
+  path.setAttribute("fill", "currentColor");
+  arrow.appendChild(path);
+  header.appendChild(arrow);
+  header.appendChild(document.createTextNode(label));
+
+  const body = document.createElement("div");
+  body.className = "force-section-body";
+  if (!startOpen) body.hidden = true;
+
+  header.addEventListener("click", () => {
+    body.hidden = !body.hidden;
+    arrow.classList.toggle("open", !body.hidden);
+  });
+
   section.appendChild(header);
-  return section;
+  section.appendChild(body);
+  return { el: section, body };
 }
 
 function createSettings(container: HTMLElement): HTMLDivElement {
@@ -601,7 +661,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   // -- Mode section (top) --
   const modeSection = makeSection("Mode");
 
-  modeSection.appendChild(makeSelect("Structure", ["domain", "device"], structureMode, (v) => {
+  modeSection.body.appendChild(makeSelect("Structure", ["domain", "device"], structureMode, (v) => {
     structureMode = v as StructureMode;
     rebuildWithStructure();
     saveSettings();
@@ -628,7 +688,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     rebuildGraph();
     saveSettings();
   });
-  modeSection.appendChild(entitiesToggle);
+  modeSection.body.appendChild(entitiesToggle);
 
   const entitiesSubOptions = document.createElement("div");
   entitiesSubOptions.className = "force-sub-options";
@@ -658,7 +718,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     saveSettings();
   });
   entitiesSubOptions.appendChild(appearOnChangeToggle);
-  modeSection.appendChild(entitiesSubOptions);
+  modeSection.body.appendChild(entitiesSubOptions);
 
   // Hulls + sub-options
   const hullToggle = makeToggle("Hulls", showHulls, (v) => {
@@ -672,7 +732,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     }
     saveSettings();
   });
-  modeSection.appendChild(hullToggle);
+  modeSection.body.appendChild(hullToggle);
 
   const hullSubOptions = document.createElement("div");
   hullSubOptions.className = "force-sub-options";
@@ -682,7 +742,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     rebuildClusters();
     saveSettings();
   }));
-  modeSection.appendChild(hullSubOptions);
+  modeSection.body.appendChild(hullSubOptions);
 
   // Constellation + sub-options
   const constellationToggle = makeToggle("Constellation", constellation, (v) => {
@@ -696,7 +756,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     ensureLoop();
     saveSettings();
   });
-  modeSection.appendChild(constellationToggle);
+  modeSection.body.appendChild(constellationToggle);
 
   const constellationSubOptions = document.createElement("div");
   constellationSubOptions.className = "force-sub-options";
@@ -704,16 +764,18 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   constellationSubOptions.appendChild(makeSlider("Glow brightness", 0, 3, glowBrightness, 0.1, (v) => { glowBrightness = v; saveSettings(); }));
   constellationSubOptions.appendChild(makeSlider("Star size", 0.2, 3, starSize, 0.1, (v) => { starSize = v; saveSettings(); }));
   constellationSubOptions.appendChild(makeSlider("Glow intensity", 0.2, 3, glowIntensity, 0.1, (v) => { glowIntensity = v; saveSettings(); }));
+  constellationSubOptions.appendChild(makeSlider("Glow size", 2, 16, glowSize, 0.5, (v) => { glowSize = v; saveSettings(); }));
   constellationSubOptions.appendChild(makeSlider("Parent glow", 0.2, 5, parentGlowIntensity, 0.1, (v) => { parentGlowIntensity = v; saveSettings(); }));
   constellationSubOptions.appendChild(makeSlider("Effect scale", 0.5, 5, effectScale, 0.1, (v) => { effectScale = v; saveSettings(); }));
   constellationSubOptions.appendChild(makeSlider("Twinkle speed", 0, 5, twinkleSpeed, 0.1, (v) => { twinkleSpeed = v; saveSettings(); }));
+  constellationSubOptions.appendChild(makeSlider("Twinkle size", 0, 1, twinkleSize, 0.05, (v) => { twinkleSize = v; saveSettings(); }));
   constellationSubOptions.appendChild(makeSlider("Line glow", 0, 3, lineGlow, 0.1, (v) => { lineGlow = v; saveSettings(); }));
   constellationSubOptions.appendChild(makeSelect("Effect",
     ["supernova", "shooting-star", "flare", "pulse-wave", "color-shift"],
     starEffect, (v) => { starEffect = v as StarEffect; saveSettings(); }));
-  modeSection.appendChild(constellationSubOptions);
+  modeSection.body.appendChild(constellationSubOptions);
 
-  panel.appendChild(modeSection);
+  panel.appendChild(modeSection.el);
 
   // -- Display section --
   const displaySection = makeSection("Display");
@@ -725,21 +787,21 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     saveSettings();
   });
   displayToggles.appendChild(changedOnlyToggle);
-  displaySection.appendChild(displayToggles);
-  displaySection.appendChild(makeSlider("Label size", 4, 24, labelSize, 1, (v) => { labelSize = v; saveSettings(); }));
-  displaySection.appendChild(makeSlider("Parent label zoom", 0.5, 5, parentLabelZoom, 0.1, (v) => { parentLabelZoom = v; saveSettings(); }));
-  displaySection.appendChild(makeSlider("Entity label zoom", 0.5, 5, entityLabelZoom, 0.1, (v) => { entityLabelZoom = v; saveSettings(); }));
-  displaySection.appendChild(makeSlider("Entity dot size", 1, 16, entityDotSize, 0.5, (v) => {
+  displaySection.body.appendChild(displayToggles);
+  displaySection.body.appendChild(makeSlider("Label size", 4, 24, labelSize, 1, (v) => { labelSize = v; saveSettings(); }));
+  displaySection.body.appendChild(makeSlider("Parent label zoom", 0.5, 5, parentLabelZoom, 0.1, (v) => { parentLabelZoom = v; saveSettings(); }));
+  displaySection.body.appendChild(makeSlider("Entity label zoom", 0.5, 5, entityLabelZoom, 0.1, (v) => { entityLabelZoom = v; saveSettings(); }));
+  displaySection.body.appendChild(makeSlider("Entity dot size", 1, 16, entityDotSize, 0.5, (v) => {
     entityDotSize = v;
     for (const fn of fnodes) {
       if (fn.tree.kind === "entity") fn.r = v;
     }
     saveSettings();
   }));
-  panel.appendChild(displaySection);
+  panel.appendChild(displaySection.el);
 
   // -- Automations section --
-  const autoSection = makeSection("Automations");
+  const autoSection = makeSection("Automations", false);
   const autoToggles = document.createElement("div");
   autoToggles.className = "force-toggles";
 
@@ -766,19 +828,93 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     if (automationOnly) rebuildGraph();
   };
 
-  autoSection.appendChild(autoToggles);
-  panel.appendChild(autoSection);
+  autoSection.body.appendChild(autoToggles);
+  panel.appendChild(autoSection.el);
 
   // Apply initial disabled states
   syncSettingsState();
 
   // -- Physics section --
-  const physicsSection = makeSection("Physics");
-  physicsSection.appendChild(makeSlider("Repulsion", 100, 3000, repulsion, 10, (v) => { repulsion = v; reheat(); saveSettings(); }));
-  physicsSection.appendChild(makeSlider("Spring length", 10, 120, springLen, 1, (v) => { springLen = v; reheat(); saveSettings(); }));
-  physicsSection.appendChild(makeSlider("Spring stiffness", 0.005, 0.15, springK, 0.005, (v) => { springK = v; reheat(); saveSettings(); }));
-  physicsSection.appendChild(makeSlider("Damping", 0.5, 0.99, damping, 0.01, (v) => { damping = v; reheat(); saveSettings(); }));
-  panel.appendChild(physicsSection);
+  const physicsSection = makeSection("Physics", false);
+  physicsSection.body.appendChild(makeSlider("Repulsion", 100, 3000, repulsion, 10, (v) => { repulsion = v; reheat(); saveSettings(); }));
+  physicsSection.body.appendChild(makeSlider("Spring length", 10, 120, springLen, 1, (v) => { springLen = v; reheat(); saveSettings(); }));
+  physicsSection.body.appendChild(makeSlider("Spring stiffness", 0.005, 0.15, springK, 0.005, (v) => { springK = v; reheat(); saveSettings(); }));
+  physicsSection.body.appendChild(makeSlider("Damping", 0.5, 0.99, damping, 0.01, (v) => { damping = v; reheat(); saveSettings(); }));
+  panel.appendChild(physicsSection.el);
+
+  // -- Colors section --
+  const colorsSection = makeSection("Colors", false);
+
+  const bgSwatch = document.createElement("label");
+  bgSwatch.className = "force-color-swatch";
+  bgSwatch.title = "Background";
+  const bgDot = document.createElement("span");
+  bgDot.className = "force-color-dot";
+  bgDot.style.background = backgroundColor;
+  const bgInput = document.createElement("input");
+  bgInput.type = "color";
+  bgInput.value = backgroundColor;
+  bgInput.addEventListener("input", () => {
+    backgroundColor = bgInput.value;
+    bgDot.style.background = bgInput.value;
+    saveSettings();
+    ensureLoop();
+  });
+  const bgName = document.createElement("span");
+  bgName.className = "force-color-name";
+  bgName.textContent = "background";
+  bgSwatch.appendChild(bgDot);
+  bgSwatch.appendChild(bgName);
+  bgSwatch.appendChild(bgInput);
+  colorsSection.body.appendChild(bgSwatch);
+
+  const colorGrid = document.createElement("div");
+  colorGrid.className = "force-color-grid";
+  for (const domain of domainList()) {
+    const swatch = document.createElement("label");
+    swatch.className = "force-color-swatch";
+    swatch.title = domain;
+
+    const dot = document.createElement("span");
+    dot.className = "force-color-dot";
+    dot.style.background = getDomainColors()[domain];
+
+    const input = document.createElement("input");
+    input.type = "color";
+    input.value = getDomainColors()[domain];
+    input.addEventListener("input", () => {
+      dot.style.background = input.value;
+      setDomainColor(domain, input.value);
+      spriteCache.clear();
+      ensureLoop();
+    });
+
+    const name = document.createElement("span");
+    name.className = "force-color-name";
+    name.textContent = domain.replace(/_/g, " ");
+
+    swatch.appendChild(dot);
+    swatch.appendChild(name);
+    swatch.appendChild(input);
+    colorGrid.appendChild(swatch);
+  }
+  colorsSection.body.appendChild(colorGrid);
+
+  function syncColorSwatches(): void {
+    const colors = getDomainColors();
+    for (const swatch of colorGrid.children) {
+      const label = swatch as HTMLLabelElement;
+      const domain = label.title;
+      const dot = label.querySelector(".force-color-dot") as HTMLSpanElement;
+      const input = label.querySelector("input") as HTMLInputElement;
+      if (dot && input && domain in colors) {
+        dot.style.background = colors[domain];
+        input.value = colors[domain];
+      }
+    }
+  }
+
+  panel.appendChild(colorsSection.el);
 
   // -- Actions --
   const buttons = document.createElement("div");
@@ -799,6 +935,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   randomColorBtn.addEventListener("click", () => {
     randomizeColors();
     spriteCache.clear();
+    syncColorSwatches();
     ensureLoop();
   });
   buttons.appendChild(randomColorBtn);
@@ -824,8 +961,10 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     parentGlowIntensity = defaults.parentGlowIntensity;
     effectScale = defaults.effectScale;
     twinkleSpeed = defaults.twinkleSpeed;
+    twinkleSize = defaults.twinkleSize;
     lineGlow = defaults.lineGlow;
     glowBrightness = defaults.glowBrightness;
+    glowSize = defaults.glowSize;
     starEffect = defaults.starEffect;
     labelSize = defaults.labelSize;
     entityDotSize = defaults.entityDotSize;
@@ -837,6 +976,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     damping = defaults.damping;
     automationOnly = defaults.automationOnly;
     appearOnChange = defaults.appearOnChange;
+    backgroundColor = defaults.backgroundColor;
     revealedNodes.clear();
     pendingReveals = [];
     if (revealTimer) { clearTimeout(revealTimer); revealTimer = null; }
@@ -854,6 +994,88 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     rebuildWithStructure();
   });
   buttons.appendChild(resetAllBtn);
+
+  const exportBtn = document.createElement("button");
+  exportBtn.className = "force-reset-btn";
+  exportBtn.textContent = "Export settings";
+  exportBtn.addEventListener("click", () => {
+    const data = { settings: loadSettings(), colors: getDomainColors() };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "hypertree-settings.json";
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast("Settings exported");
+  });
+  buttons.appendChild(exportBtn);
+
+  const importBtn = document.createElement("button");
+  importBtn.className = "force-reset-btn";
+  importBtn.textContent = "Import settings";
+  importBtn.addEventListener("click", () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".json";
+    input.addEventListener("change", () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      file.text().then((text) => {
+        try {
+          const data = JSON.parse(text);
+          if (data.settings) {
+            const merged = { ...defaults, ...data.settings };
+            localStorage.setItem(SETTINGS_KEY, JSON.stringify(merged));
+          }
+          if (data.colors) setDomainColors(data.colors);
+          spriteCache.clear();
+          // Reload settings into live variables
+          const s = loadSettings();
+          showHulls = s.showHulls;
+          showLabels = s.showLabels;
+          showEntities = s.showEntities;
+          showAutomationEdges = s.showAutomationEdges;
+          unavailableMode = s.unavailableMode;
+          changedOnly = s.changedOnly;
+          constellation = s.constellation;
+          groupBy = s.groupBy;
+          structureMode = s.structureMode;
+          starSize = s.starSize;
+          glowIntensity = s.glowIntensity;
+          parentGlowIntensity = s.parentGlowIntensity;
+          effectScale = s.effectScale;
+          twinkleSpeed = s.twinkleSpeed;
+          twinkleSize = s.twinkleSize;
+          lineGlow = s.lineGlow;
+          glowBrightness = s.glowBrightness;
+          glowSize = s.glowSize;
+          starEffect = s.starEffect;
+          labelSize = s.labelSize;
+          entityDotSize = s.entityDotSize;
+          parentLabelZoom = s.parentLabelZoom;
+          entityLabelZoom = s.entityLabelZoom;
+          repulsion = s.repulsion;
+          springLen = s.springLen;
+          springK = s.springK;
+          damping = s.damping;
+          automationOnly = s.automationOnly;
+          appearOnChange = s.appearOnChange;
+          backgroundColor = s.backgroundColor;
+          // Rebuild UI and graph
+          const container = wrapper.parentElement!;
+          wrapper.remove();
+          settingsPanel = createSettings(container);
+          rebuildWithStructure();
+          showToast("Settings imported");
+        } catch {
+          showToast("Invalid settings file");
+        }
+      });
+    });
+    input.click();
+  });
+  buttons.appendChild(importBtn);
 
   panel.appendChild(buttons);
 
@@ -1172,6 +1394,8 @@ function buildGraph(root: TreeNode): void {
   fnodes = nodes.map((n) => {
     const r = n.kind === "root" ? 10 : n.kind === "area" ? 8
       : (n.kind === "domain" || n.kind === "device") ? 6 : entityDotSize;
+    let hash = 0;
+    for (let i = 0; i < n.id.length; i++) hash = ((hash << 5) - hash + n.id.charCodeAt(i)) | 0;
     const fn: FNode = {
       tree: n,
       x: Math.random() * 600 + 100,
@@ -1179,6 +1403,7 @@ function buildGraph(root: TreeNode): void {
       vx: 0, vy: 0,
       fx: null, fy: null,
       r,
+      phase: (hash & 0xffff) / 0xffff * Math.PI * 2,
     };
     map.set(n, fn);
     return fn;
@@ -1256,7 +1481,9 @@ function quadCreate(x0: number, y0: number, x1: number, y1: number): QuadNode {
   return { x0, y0, x1, y1, cx: 0, cy: 0, count: 0, body: null, nw: null, ne: null, sw: null, se: null };
 }
 
-function quadInsert(quad: QuadNode, fn: FNode): void {
+const QUAD_MAX_DEPTH = 40;
+
+function quadInsert(quad: QuadNode, fn: FNode, depth = 0): void {
   if (quad.count === 0) {
     quad.body = fn;
     quad.cx = fn.x;
@@ -1271,16 +1498,18 @@ function quadInsert(quad: QuadNode, fn: FNode): void {
   quad.cy = (quad.cy * quad.count + fn.y) / total;
   quad.count = total;
 
+  if (depth >= QUAD_MAX_DEPTH) return;
+
   // If leaf with existing body, push it down then insert new
   if (quad.body) {
     const existing = quad.body;
     quad.body = null;
-    quadPush(quad, existing);
+    quadPush(quad, existing, depth);
   }
-  quadPush(quad, fn);
+  quadPush(quad, fn, depth);
 }
 
-function quadPush(quad: QuadNode, fn: FNode): void {
+function quadPush(quad: QuadNode, fn: FNode, depth: number): void {
   const mx = (quad.x0 + quad.x1) / 2;
   const my = (quad.y0 + quad.y1) / 2;
   const east = fn.x >= mx;
@@ -1305,7 +1534,7 @@ function quadPush(quad: QuadNode, fn: FNode): void {
     }
   }
 
-  quadInsert(child, fn);
+  quadInsert(child, fn, depth + 1);
 }
 
 const BH_THETA = 0.9;
@@ -1754,19 +1983,21 @@ function drawConstellation(ctx: CanvasRenderingContext2D, now: number): void {
 
   invalidateSpriteCache();
 
+  ctx.globalCompositeOperation = "lighter";
+
   for (const fn of fnodes) {
     if (fn.tree.kind !== "entity") continue;
 
     const unavail = unavailableMode === "pulse" && isUnavailable(fn);
-    const phase = fn.x * 0.1 + fn.y * 0.07;
-    const twinkle = twinkleSpeed === 0 ? 1 : 0.5 + 0.5 * Math.sin(now * 0.003 * twinkleSpeed + phase);
+    const twinkle = twinkleSpeed === 0 ? 1 : 0.5 + 0.5 * Math.sin(now * 0.003 * twinkleSpeed + fn.phase);
     const pulse = twinkle * twinkle;
     const baseAlpha = unavail ? 0.15 : 0.5;
     const starAlpha = Math.min(1, baseAlpha * (0.15 + 0.85 * pulse) * glowBrightness);
 
     const nodeCol = unavail ? "#666" : color(fn.tree);
     const starR = 5 * starScale;
-    const haloR = starR * 8 * glowIntensity;
+    const sizePulse = 1 + twinkleSize * (pulse - 0.5);
+    const haloR = starR * glowSize * glowIntensity * sizePulse;
     const sprite = getStarSprite(nodeCol, glowIntensity);
     const drawSize = haloR * 2;
 
@@ -1774,6 +2005,7 @@ function drawConstellation(ctx: CanvasRenderingContext2D, now: number): void {
     ctx.drawImage(sprite.canvas, fn.x - haloR, fn.y - haloR, drawSize, drawSize);
   }
 
+  ctx.globalCompositeOperation = "source-over";
   ctx.globalAlpha = 1;
 }
 
@@ -1781,17 +2013,19 @@ function drawConstellationParents(ctx: CanvasRenderingContext2D, now: number): v
   const starScale = starSize / Math.sqrt(transform.k);
   const pgi = parentGlowIntensity;
 
+  ctx.globalCompositeOperation = "lighter";
+
   for (const fn of fnodes) {
     if (fn.tree.kind === "entity") continue;
 
-    const phase = fn.x * 0.1 + fn.y * 0.07;
-    const twinkle = twinkleSpeed === 0 ? 1 : 0.5 + 0.5 * Math.sin(now * 0.003 * twinkleSpeed + phase);
+    const twinkle = twinkleSpeed === 0 ? 1 : 0.5 + 0.5 * Math.sin(now * 0.003 * twinkleSpeed + fn.phase);
     const pulse = twinkle * twinkle;
     const starAlpha = Math.min(1, 0.9 * (0.15 + 0.85 * pulse) * glowBrightness);
 
     const nodeCol = color(fn.tree);
     const starR = (fn.tree.kind === "root" ? 14 : 9) * starScale;
-    const haloR = starR * 8 * pgi;
+    const sizePulse = 1 + twinkleSize * (pulse - 0.5);
+    const haloR = starR * glowSize * pgi * sizePulse;
     const sprite = getStarSprite(nodeCol, pgi);
     const drawSize = haloR * 2;
 
@@ -1799,6 +2033,33 @@ function drawConstellationParents(ctx: CanvasRenderingContext2D, now: number): v
     ctx.drawImage(sprite.canvas, fn.x - haloR, fn.y - haloR, drawSize, drawSize);
   }
 
+  ctx.globalCompositeOperation = "source-over";
+
+  ctx.globalAlpha = 1;
+}
+
+function drawConstellationHover(ctx: CanvasRenderingContext2D): void {
+  if (!hoveredNode) return;
+  const fn = hoveredNode;
+  const elapsed = performance.now() - hoverStartTime;
+  const t = Math.min(1, elapsed / 120);
+  const ease = t * (2 - t);
+
+  const starScale = starSize / Math.sqrt(transform.k);
+  const isEntity = fn.tree.kind === "entity";
+  const baseR = isEntity ? 5 : (fn.tree.kind === "root" ? 14 : 9);
+  const starR = baseR * starScale;
+  const intensity = isEntity ? glowIntensity : parentGlowIntensity;
+  const scale = 1 + 0.5 * ease;
+  const haloR = starR * glowSize * intensity * scale;
+  const nodeCol = color(fn.tree);
+  const sprite = getStarSprite(nodeCol, intensity);
+  const drawSize = haloR * 2;
+
+  ctx.globalCompositeOperation = "lighter";
+  ctx.globalAlpha = 0.6 * ease;
+  ctx.drawImage(sprite.canvas, fn.x - haloR, fn.y - haloR, drawSize, drawSize);
+  ctx.globalCompositeOperation = "source-over";
   ctx.globalAlpha = 1;
 }
 
@@ -2086,7 +2347,8 @@ function draw(): void {
   const dpr = devicePixelRatio;
 
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = backgroundColor;
+  ctx.fillRect(0, 0, width, height);
 
   ctx.setTransform(
     dpr * transform.k, 0,
@@ -2101,6 +2363,7 @@ function draw(): void {
     drawConstellation(ctx, now);
     drawStarEffects(ctx, now);
     drawConstellationParents(ctx, now);
+    drawConstellationHover(ctx);
     drawUnavailablePulses(ctx, now);
     drawSearchHighlights(ctx);
     if (showLabels) drawLabels(ctx);
@@ -2204,6 +2467,7 @@ function onMouseMove(e: MouseEvent): void {
   }
   const n = hitTest(e.offsetX, e.offsetY);
   const changed = hoveredNode !== n;
+  if (changed && n) hoverStartTime = performance.now();
   hoveredNode = n;
   if (n) {
     let extra = "";

@@ -1,3 +1,5 @@
+const COLORS_KEY = "ha-hypertree-colors";
+
 const DEFAULT_DOMAIN_COLORS: Record<string, string> = {
   light: "#ffca28",
   switch: "#66bb6a",
@@ -44,6 +46,26 @@ const KIND_COLORS: Record<string, string> = {
 
 const DEFAULT_COLOR = "#607d8b";
 
+function loadColors(): void {
+  try {
+    const raw = localStorage.getItem(COLORS_KEY);
+    if (raw) {
+      const saved = JSON.parse(raw);
+      for (const [key, value] of Object.entries(saved)) {
+        if (key in DOMAIN_COLORS && typeof value === "string") {
+          DOMAIN_COLORS[key] = value;
+        }
+      }
+    }
+  } catch { /* ignore */ }
+}
+
+loadColors();
+
+export function saveColors(): void {
+  try { localStorage.setItem(COLORS_KEY, JSON.stringify(DOMAIN_COLORS)); } catch { /* ignore */ }
+}
+
 export function nodeColor(kind: string, domain?: string): string {
   if (kind === "entity" || kind === "domain") {
     return (domain && DOMAIN_COLORS[domain]) ?? DEFAULT_COLOR;
@@ -72,10 +94,34 @@ export function randomizeColors(): void {
   for (const key of Object.keys(DOMAIN_COLORS)) {
     DOMAIN_COLORS[key] = randomHslColor();
   }
+  saveColors();
 }
 
 export function resetColors(): void {
   for (const key of Object.keys(DEFAULT_DOMAIN_COLORS)) {
     DOMAIN_COLORS[key] = DEFAULT_DOMAIN_COLORS[key];
   }
+  saveColors();
+}
+
+export function getDomainColors(): Record<string, string> {
+  return { ...DOMAIN_COLORS };
+}
+
+export function setDomainColors(colors: Record<string, string>): void {
+  for (const [key, value] of Object.entries(colors)) {
+    if (key in DOMAIN_COLORS) DOMAIN_COLORS[key] = value;
+  }
+  saveColors();
+}
+
+export function setDomainColor(domain: string, color: string): void {
+  if (domain in DOMAIN_COLORS) {
+    DOMAIN_COLORS[domain] = color;
+    saveColors();
+  }
+}
+
+export function domainList(): string[] {
+  return Object.keys(DOMAIN_COLORS);
 }

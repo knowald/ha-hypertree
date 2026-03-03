@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.0 - 2026-03-03
+
+### Added
+
+- Add glow size slider for constellation star halo radius
+- Add twinkle size slider to pulse star glow radius in sync with brightness
+- Add constellation hover effect with animated fade-in glow on hovered stars
+- Add settings export/import (JSON file with all settings and domain colors)
+- Add background color picker to Colors section
+- Add domain color pickers with two-column swatch grid
+- Add collapsible settings sections with animated SVG arrow toggles
+- Persist domain colors to localStorage across sessions
+
+### Changed
+
+- Collapse Automations, Physics, and Colors sections by default to reduce panel height
+- Increase star contrast with tighter glow falloff, larger core, and additive blending
+
+### Fixed
+
+- Fix "too much recursion" crash when switching unavailable mode to hidden by adding depth limit to Barnes-Hut quadtree
+- Fix rapid star flickering during drag by using stable per-node phase hash instead of position-based twinkle phase
+
 ## 0.7.0 - 2026-03-03
 
 ### Added
