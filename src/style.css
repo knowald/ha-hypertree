@@ -546,20 +546,15 @@ body {
   gap: 0.5rem 0.75rem;
 }
 
-.force-sub-option {
-  padding-left: 1.2rem;
-}
-
-.force-constellation-options {
+.force-sub-options {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
-  padding-left: 0.4rem;
+  padding-left: 0.6rem;
   border-left: 2px solid var(--border);
-  margin-top: 0.25rem;
 }
 
-.force-constellation-options[hidden] {
+.force-sub-options[hidden] {
   display: none;
 }
 
@@ -623,6 +618,12 @@ body {
 
 .force-search::placeholder {
   color: var(--text-muted);
+}
+
+.force-automation-status {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  margin-left: 0.25rem;
 }
 
 .force-buttons {

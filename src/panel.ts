@@ -76,7 +76,7 @@ class HypertreePanel extends HTMLElement {
       treeContainer.innerHTML = "";
 
       const visualizations = [
-        createForceViz(registries, haUrl),
+        createForceViz(registries, haUrl, hass.connection),
         dendrogramViz,
         globeViz,
         hyperbolicViz,

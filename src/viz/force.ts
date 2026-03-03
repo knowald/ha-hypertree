@@ -1,3 +1,4 @@
+import type { Connection } from "home-assistant-js-websocket";
 import type { Visualization } from "./types";
 import type { TreeNode } from "../tree/types";
 import type { HaState, Registries } from "../ha/types";
@@ -7,7 +8,8 @@ import { createTransform, applyWheel, screenToWorld, type ZoomTransform } from "
 import { buildTree, buildTreeByDevice } from "../tree/build";
 import { loadCredentials } from "../login";
 import { getRootElement } from "../rootElement";
-import { updateFps } from "../debug";
+import { updateFps, debugLog } from "../debug";
+import { fetchAutomationEdges, type AutomationEdge, type AutomationRelation } from "../ha/automation";
 
 interface FNode {
   tree: TreeNode;
@@ -62,6 +64,7 @@ interface ForceSettings {
   showHulls: boolean;
   showLabels: boolean;
   showEntities: boolean;
+  showAutomationEdges: boolean;
   unavailableMode: UnavailableMode;
   changedOnly: boolean;
   constellation: boolean;
@@ -83,6 +86,8 @@ interface ForceSettings {
   springLen: number;
   springK: number;
   damping: number;
+  automationOnly: boolean;
+  appearOnChange: boolean;
 }
 
 type StarEffect = "supernova" | "shooting-star" | "flare" | "pulse-wave" | "color-shift";
@@ -91,6 +96,7 @@ const defaults: ForceSettings = {
   showHulls: false,
   showLabels: true,
   showEntities: true,
+  showAutomationEdges: false,
   unavailableMode: "pulse",
   changedOnly: true,
   constellation: false,
@@ -112,6 +118,8 @@ const defaults: ForceSettings = {
   springLen: 64,
   springK: 0.035,
   damping: 0.8,
+  automationOnly: false,
+  appearOnChange: false,
 };
 
 function loadSettings(): ForceSettings {
@@ -132,11 +140,12 @@ function loadSettings(): ForceSettings {
 
 function saveSettings(): void {
   const s: ForceSettings = {
-    showHulls, showLabels, showEntities, unavailableMode, changedOnly, constellation, groupBy, structureMode,
+    showHulls, showLabels, showEntities, showAutomationEdges, unavailableMode, changedOnly, constellation, groupBy, structureMode,
     starSize, glowIntensity, twinkleSpeed, lineGlow, glowBrightness,
     starEffect, parentGlowIntensity, effectScale,
     labelSize, entityDotSize, parentLabelZoom, entityLabelZoom,
     repulsion, springLen, springK, damping,
+    automationOnly, appearOnChange,
   };
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* ignore */ }
 }
@@ -145,6 +154,7 @@ const saved = loadSettings();
 let showHulls = saved.showHulls;
 let showLabels = saved.showLabels;
 let showEntities = saved.showEntities;
+let showAutomationEdges = saved.showAutomationEdges;
 let unavailableMode: UnavailableMode = saved.unavailableMode;
 let changedOnly = saved.changedOnly;
 let constellation = saved.constellation;
@@ -177,6 +187,22 @@ let springK = saved.springK;
 let damping = saved.damping;
 let alphaDecay = 0.998;
 let alpha = 1;
+
+let automationOnly = saved.automationOnly;
+let appearOnChange = saved.appearOnChange;
+let revealedNodes: Set<string> = new Set();
+let stateChangeCounts: Map<string, number> = new Map();
+let allTreeNodesById: Map<string, TreeNode> = new Map();
+let allEntityTreeNodes: Map<string, TreeNode> = new Map();
+let pendingReveals: string[] = [];
+let revealTimer: ReturnType<typeof setTimeout> | null = null;
+
+let haConnection: Connection | null = null;
+let automationEdges: AutomationEdge[] = [];
+let automationEdgesByEntity: Map<string, AutomationEdge[]> = new Map();
+let automationLoading = false;
+let automationLoaded = false;
+let onAutomationLoaded: (() => void) | null = null;
 
 const GLOW_DURATION = 3000;
 
@@ -261,8 +287,9 @@ function getStarSprite(nodeCol: string, intensity: number): { canvas: OffscreenC
   return entry;
 }
 
-export function createForceViz(registries: Registries, haUrl?: string): Visualization {
+export function createForceViz(registries: Registries, haUrl?: string, connection?: Connection): Visualization {
   panelHaUrl = haUrl ?? "";
+  haConnection = connection ?? null;
   return {
     name: "Force",
 
@@ -294,6 +321,7 @@ export function createForceViz(registries: Registries, haUrl?: string): Visualiz
         : buildTree(registries);
       buildGraph(root);
       resize();
+      if (showAutomationEdges || automationOnly) loadAutomationEdges();
 
       canvas.addEventListener("mousedown", onMouseDown);
       canvas.addEventListener("mousemove", onMouseMove);
@@ -327,6 +355,17 @@ export function createForceViz(registries: Registries, haUrl?: string): Visualiz
       clusters = [];
       entityNodeMap = new Map();
       glowTimestamps = new Map();
+      automationEdges = [];
+      automationEdgesByEntity = new Map();
+      automationLoaded = false;
+      automationLoading = false;
+      onAutomationLoaded = null;
+      revealedNodes.clear();
+      stateChangeCounts.clear();
+      allTreeNodesById = new Map();
+      allEntityTreeNodes = new Map();
+      pendingReveals = [];
+      if (revealTimer) { clearTimeout(revealTimer); revealTimer = null; }
       dismissContextMenu();
       dragNode = null;
       panning = false;
@@ -337,6 +376,14 @@ export function createForceViz(registries: Registries, haUrl?: string): Visualiz
     },
 
     onEntityChanged(entityId: string, oldValue?: string) {
+      stateChangeCounts.set(entityId, (stateChangeCounts.get(entityId) ?? 0) + 1);
+
+      if (appearOnChange && allEntityTreeNodes.has(entityId)) {
+        if (!automationOnly || automationEdgesByEntity.has(entityId)) {
+          revealAncestorChain(entityId);
+        }
+      }
+
       if (changedOnly && oldValue !== undefined) {
         const current = currentStates.get(entityId);
         if (current && current.state === oldValue) return;
@@ -350,7 +397,7 @@ export function createForceViz(registries: Registries, haUrl?: string): Visualiz
   };
 }
 
-function rebuildWithStructure(): void {
+function rebuildGraph(): void {
   if (!currentRegistries || !canvas) return;
 
   const root = structureMode === "device"
@@ -359,6 +406,119 @@ function rebuildWithStructure(): void {
 
   alpha = 1;
   buildGraph(root);
+}
+
+function rebuildWithStructure(): void {
+  rebuildGraph();
+
+  automationLoaded = false;
+  automationEdges = [];
+  automationEdgesByEntity = new Map();
+  if (showAutomationEdges || automationOnly) loadAutomationEdges();
+}
+
+const REVEAL_STAGGER_MS = 120;
+
+function revealAncestorChain(entityId: string): void {
+  const treeNode = allEntityTreeNodes.get(entityId);
+  if (!treeNode) return;
+
+  // Walk up from entity to root, collect ancestors that aren't yet revealed
+  const chain: TreeNode[] = [];
+  let cur: TreeNode | null = treeNode;
+  while (cur && cur.kind !== "root") {
+    if (!revealedNodes.has(cur.id)) chain.push(cur);
+    cur = cur.parent;
+  }
+
+  if (chain.length === 0) return;
+
+  // Reverse so ancestors come first: area → domain/device → entity
+  chain.reverse();
+
+  // Queue nodes that aren't already pending
+  const queued = new Set(pendingReveals);
+  for (const node of chain) {
+    if (queued.has(node.id)) continue;
+    pendingReveals.push(node.id);
+    queued.add(node.id);
+  }
+
+  if (!revealTimer) processNextReveal();
+}
+
+function processNextReveal(): void {
+  if (pendingReveals.length === 0) {
+    revealTimer = null;
+    return;
+  }
+
+  const nextId = pendingReveals.shift()!;
+
+  if (revealedNodes.has(nextId)) {
+    processNextReveal();
+    return;
+  }
+
+  revealedNodes.add(nextId);
+  insertRevealedNode(nextId);
+
+  if (pendingReveals.length > 0) {
+    revealTimer = setTimeout(processNextReveal, REVEAL_STAGGER_MS);
+  } else {
+    revealTimer = null;
+  }
+}
+
+function insertRevealedNode(nodeId: string): void {
+  const treeNode = allTreeNodesById.get(nodeId);
+  if (!treeNode) return;
+
+  // Already in the graph
+  if (treeNode.entityId && entityNodeMap.has(treeNode.entityId)) return;
+  for (const existing of fnodes) {
+    if (existing.tree === treeNode) return;
+  }
+
+  const r = treeNode.kind === "area" ? 8
+    : (treeNode.kind === "domain" || treeNode.kind === "device") ? 6
+    : entityDotSize;
+
+  const fn: FNode = {
+    tree: treeNode,
+    x: 0, y: 0,
+    vx: 0, vy: 0,
+    fx: null, fy: null,
+    r,
+  };
+
+  // Position near parent if it exists in the graph
+  if (treeNode.parent) {
+    for (const existing of fnodes) {
+      if (existing.tree === treeNode.parent) {
+        fn.x = existing.x + (Math.random() - 0.5) * 30;
+        fn.y = existing.y + (Math.random() - 0.5) * 30;
+        parentFNode.set(fn, existing);
+        fedges.push({ source: existing, target: fn });
+        const children = childFNodes.get(existing);
+        if (children) children.push(fn);
+        break;
+      }
+    }
+  }
+
+  if (fn.x === 0 && fn.y === 0) {
+    fn.x = width / 2 + (Math.random() - 0.5) * 100;
+    fn.y = height / 2 + (Math.random() - 0.5) * 100;
+  }
+
+  fnodes.push(fn);
+  childFNodes.set(fn, []);
+  if (treeNode.entityId) entityNodeMap.set(treeNode.entityId, fn);
+
+  glowTimestamps.set(fn, performance.now());
+  alpha = Math.max(alpha, 0.3);
+  ensureLoop();
 }
 
 function reheat(): void {
@@ -407,27 +567,164 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   });
   panel.appendChild(searchInput);
 
+  // Forward-declare toggle references for cross-section disabled state management
+  let entitiesToggle!: HTMLLabelElement;
+  let unavailableSelect!: HTMLLabelElement;
+  let changedOnlyToggle!: HTMLLabelElement;
+  let appearOnChangeToggle!: HTMLLabelElement;
+  let autoOnlyToggle!: HTMLLabelElement;
+
+  function setDisabled(el: HTMLElement, disabled: boolean): void {
+    el.style.opacity = disabled ? "0.4" : "";
+    const input = el.querySelector("input");
+    const select = el.querySelector("select");
+    if (input) input.disabled = disabled;
+    if (select) select.disabled = disabled;
+  }
+
+  function syncSettingsState(): void {
+    const entitiesOff = !showEntities;
+    const aocOn = appearOnChange;
+
+    // Appear on change forces entities on, so lock the toggle
+    setDisabled(entitiesToggle, aocOn);
+
+    // These are all entity-specific — irrelevant when entities are off
+    setDisabled(unavailableSelect, entitiesOff || aocOn);
+    setDisabled(changedOnlyToggle, entitiesOff);
+    setDisabled(appearOnChangeToggle, entitiesOff);
+
+    // Automation-only needs entities visible AND automation data loaded
+    setDisabled(autoOnlyToggle, entitiesOff || !automationLoaded);
+  }
+
+  // -- Mode section (top) --
+  const modeSection = makeSection("Mode");
+
+  modeSection.appendChild(makeSelect("Structure", ["domain", "device"], structureMode, (v) => {
+    structureMode = v as StructureMode;
+    rebuildWithStructure();
+    saveSettings();
+  }));
+
+  // Entities + sub-options
+  entitiesToggle = makeToggle("Entities", showEntities, (v) => {
+    showEntities = v;
+    entitiesSubOptions.hidden = !v;
+    if (!v) {
+      if (appearOnChange) {
+        appearOnChange = false;
+        appearOnChangeToggle.querySelector("input")!.checked = false;
+        revealedNodes.clear();
+        pendingReveals = [];
+        if (revealTimer) { clearTimeout(revealTimer); revealTimer = null; }
+      }
+      if (automationOnly) {
+        automationOnly = false;
+        autoOnlyToggle.querySelector("input")!.checked = false;
+      }
+    }
+    syncSettingsState();
+    rebuildGraph();
+    saveSettings();
+  });
+  modeSection.appendChild(entitiesToggle);
+
+  const entitiesSubOptions = document.createElement("div");
+  entitiesSubOptions.className = "force-sub-options";
+  entitiesSubOptions.hidden = !showEntities;
+
+  unavailableSelect = makeSelect("Unavailable", ["normal", "pulse", "hidden", "only"], unavailableMode, (v) => {
+    const prev = unavailableMode;
+    unavailableMode = v as UnavailableMode;
+    if (v === "hidden" || prev === "hidden" || v === "only" || prev === "only") rebuildGraph();
+    ensureLoop();
+    saveSettings();
+  });
+  entitiesSubOptions.appendChild(unavailableSelect);
+
+  appearOnChangeToggle = makeToggle("Appear on change", appearOnChange, (v) => {
+    appearOnChange = v;
+    if (v) {
+      showEntities = true;
+      entitiesToggle.querySelector("input")!.checked = true;
+    } else {
+      revealedNodes.clear();
+      pendingReveals = [];
+      if (revealTimer) { clearTimeout(revealTimer); revealTimer = null; }
+    }
+    syncSettingsState();
+    rebuildGraph();
+    saveSettings();
+  });
+  entitiesSubOptions.appendChild(appearOnChangeToggle);
+  modeSection.appendChild(entitiesSubOptions);
+
+  // Hulls + sub-options
+  const hullToggle = makeToggle("Hulls", showHulls, (v) => {
+    showHulls = v;
+    hullSubOptions.hidden = !v;
+    if (v && constellation) {
+      constellation = false;
+      constellationSubOptions.hidden = true;
+      constellationToggle.querySelector("input")!.checked = false;
+      ensureLoop();
+    }
+    saveSettings();
+  });
+  modeSection.appendChild(hullToggle);
+
+  const hullSubOptions = document.createElement("div");
+  hullSubOptions.className = "force-sub-options";
+  hullSubOptions.hidden = !showHulls;
+  hullSubOptions.appendChild(makeSelect("Grouping", ["area", "domain"], groupBy, (v) => {
+    groupBy = v as GroupMode;
+    rebuildClusters();
+    saveSettings();
+  }));
+  modeSection.appendChild(hullSubOptions);
+
+  // Constellation + sub-options
+  const constellationToggle = makeToggle("Constellation", constellation, (v) => {
+    constellation = v;
+    constellationSubOptions.hidden = !v;
+    if (v && showHulls) {
+      showHulls = false;
+      hullSubOptions.hidden = true;
+      hullToggle.querySelector("input")!.checked = false;
+    }
+    ensureLoop();
+    saveSettings();
+  });
+  modeSection.appendChild(constellationToggle);
+
+  const constellationSubOptions = document.createElement("div");
+  constellationSubOptions.className = "force-sub-options";
+  constellationSubOptions.hidden = !constellation;
+  constellationSubOptions.appendChild(makeSlider("Glow brightness", 0, 3, glowBrightness, 0.1, (v) => { glowBrightness = v; saveSettings(); }));
+  constellationSubOptions.appendChild(makeSlider("Star size", 0.2, 3, starSize, 0.1, (v) => { starSize = v; saveSettings(); }));
+  constellationSubOptions.appendChild(makeSlider("Glow intensity", 0.2, 3, glowIntensity, 0.1, (v) => { glowIntensity = v; saveSettings(); }));
+  constellationSubOptions.appendChild(makeSlider("Parent glow", 0.2, 5, parentGlowIntensity, 0.1, (v) => { parentGlowIntensity = v; saveSettings(); }));
+  constellationSubOptions.appendChild(makeSlider("Effect scale", 0.5, 5, effectScale, 0.1, (v) => { effectScale = v; saveSettings(); }));
+  constellationSubOptions.appendChild(makeSlider("Twinkle speed", 0, 5, twinkleSpeed, 0.1, (v) => { twinkleSpeed = v; saveSettings(); }));
+  constellationSubOptions.appendChild(makeSlider("Line glow", 0, 3, lineGlow, 0.1, (v) => { lineGlow = v; saveSettings(); }));
+  constellationSubOptions.appendChild(makeSelect("Effect",
+    ["supernova", "shooting-star", "flare", "pulse-wave", "color-shift"],
+    starEffect, (v) => { starEffect = v as StarEffect; saveSettings(); }));
+  modeSection.appendChild(constellationSubOptions);
+
+  panel.appendChild(modeSection);
+
   // -- Display section --
   const displaySection = makeSection("Display");
   const displayToggles = document.createElement("div");
   displayToggles.className = "force-toggles";
   displayToggles.appendChild(makeToggle("Labels", showLabels, (v) => { showLabels = v; saveSettings(); }));
-  displayToggles.appendChild(makeToggle("Entities", showEntities, (v) => {
-    showEntities = v;
-    rebuildWithStructure();
-    saveSettings();
-  }));
-  displayToggles.appendChild(makeSelect("Unavailable", ["normal", "pulse", "hidden", "only"], unavailableMode, (v) => {
-    const prev = unavailableMode;
-    unavailableMode = v as UnavailableMode;
-    if (v === "hidden" || prev === "hidden" || v === "only" || prev === "only") rebuildWithStructure();
-    ensureLoop();
-    saveSettings();
-  }));
-  displayToggles.appendChild(makeToggle("Changed only", changedOnly, (v) => {
+  changedOnlyToggle = makeToggle("Changed only", changedOnly, (v) => {
     changedOnly = v;
     saveSettings();
-  }));
+  });
+  displayToggles.appendChild(changedOnlyToggle);
   displaySection.appendChild(displayToggles);
   displaySection.appendChild(makeSlider("Label size", 4, 24, labelSize, 1, (v) => { labelSize = v; saveSettings(); }));
   displaySection.appendChild(makeSlider("Parent label zoom", 0.5, 5, parentLabelZoom, 0.1, (v) => { parentLabelZoom = v; saveSettings(); }));
@@ -441,69 +738,39 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   }));
   panel.appendChild(displaySection);
 
-  // -- Mode section --
-  const modeSection = makeSection("Mode");
-  const modeToggles = document.createElement("div");
-  modeToggles.className = "force-toggles";
+  // -- Automations section --
+  const autoSection = makeSection("Automations");
+  const autoToggles = document.createElement("div");
+  autoToggles.className = "force-toggles";
 
-  modeToggles.appendChild(makeSelect("Structure", ["domain", "device"], structureMode, (v) => {
-    structureMode = v as StructureMode;
-    rebuildWithStructure();
+  autoToggles.appendChild(makeToggle("Show automation edges", showAutomationEdges, (v) => {
+    showAutomationEdges = v;
     saveSettings();
+    if (v && !automationLoaded && !automationLoading) loadAutomationEdges();
+    ensureLoop();
   }));
 
-  const hullGrouping = makeSelect("Grouping", ["area", "domain"], groupBy, (v) => {
-    groupBy = v as GroupMode;
-    rebuildClusters();
+  autoOnlyToggle = makeToggle("Automation entities only", automationOnly, (v) => {
+    automationOnly = v;
     saveSettings();
-  });
-  hullGrouping.hidden = !showHulls;
-  hullGrouping.className = "toggle-label force-sub-option";
-
-  const hullToggle = makeToggle("Hulls", showHulls, (v) => {
-    showHulls = v;
-    hullGrouping.hidden = !v;
-    if (v && constellation) {
-      constellation = false;
-      constellationContent.hidden = true;
-      constellationToggle.querySelector("input")!.checked = false;
-      ensureLoop();
+    if (v && !automationLoaded && !automationLoading) {
+      loadAutomationEdges();
+    } else {
+      rebuildGraph();
     }
-    saveSettings();
   });
-  modeToggles.appendChild(hullToggle);
-  modeToggles.appendChild(hullGrouping);
+  autoToggles.appendChild(autoOnlyToggle);
 
-  const constellationContent = document.createElement("div");
-  constellationContent.className = "force-constellation-options";
-  constellationContent.hidden = !constellation;
+  onAutomationLoaded = () => {
+    syncSettingsState();
+    if (automationOnly) rebuildGraph();
+  };
 
-  const constellationToggle = makeToggle("Constellation", constellation, (v) => {
-    constellation = v;
-    constellationContent.hidden = !v;
-    if (v && showHulls) {
-      showHulls = false;
-      hullGrouping.hidden = true;
-      hullToggle.querySelector("input")!.checked = false;
-    }
-    ensureLoop();
-    saveSettings();
-  });
-  modeToggles.appendChild(constellationToggle);
-  modeSection.appendChild(modeToggles);
+  autoSection.appendChild(autoToggles);
+  panel.appendChild(autoSection);
 
-  constellationContent.appendChild(makeSlider("Glow brightness", 0, 3, glowBrightness, 0.1, (v) => { glowBrightness = v; saveSettings(); }));
-  constellationContent.appendChild(makeSlider("Star size", 0.2, 3, starSize, 0.1, (v) => { starSize = v; saveSettings(); }));
-  constellationContent.appendChild(makeSlider("Glow intensity", 0.2, 3, glowIntensity, 0.1, (v) => { glowIntensity = v; saveSettings(); }));
-  constellationContent.appendChild(makeSlider("Parent glow", 0.2, 5, parentGlowIntensity, 0.1, (v) => { parentGlowIntensity = v; saveSettings(); }));
-  constellationContent.appendChild(makeSlider("Effect scale", 0.5, 5, effectScale, 0.1, (v) => { effectScale = v; saveSettings(); }));
-  constellationContent.appendChild(makeSlider("Twinkle speed", 0, 5, twinkleSpeed, 0.1, (v) => { twinkleSpeed = v; saveSettings(); }));
-  constellationContent.appendChild(makeSlider("Line glow", 0, 3, lineGlow, 0.1, (v) => { lineGlow = v; saveSettings(); }));
-  constellationContent.appendChild(makeSelect("Effect",
-    ["supernova", "shooting-star", "flare", "pulse-wave", "color-shift"],
-    starEffect, (v) => { starEffect = v as StarEffect; saveSettings(); }));
-  modeSection.appendChild(constellationContent);
-  panel.appendChild(modeSection);
+  // Apply initial disabled states
+  syncSettingsState();
 
   // -- Physics section --
   const physicsSection = makeSection("Physics");
@@ -522,7 +789,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   resetPosBtn.textContent = "Reset positions";
   resetPosBtn.addEventListener("click", () => {
     transform = createTransform();
-    rebuildWithStructure();
+    rebuildGraph();
   });
   buttons.appendChild(resetPosBtn);
 
@@ -546,6 +813,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     showHulls = defaults.showHulls;
     showLabels = defaults.showLabels;
     showEntities = defaults.showEntities;
+    showAutomationEdges = defaults.showAutomationEdges;
     unavailableMode = defaults.unavailableMode;
     changedOnly = defaults.changedOnly;
     constellation = defaults.constellation;
@@ -567,7 +835,17 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     springLen = defaults.springLen;
     springK = defaults.springK;
     damping = defaults.damping;
+    automationOnly = defaults.automationOnly;
+    appearOnChange = defaults.appearOnChange;
+    revealedNodes.clear();
+    pendingReveals = [];
+    if (revealTimer) { clearTimeout(revealTimer); revealTimer = null; }
+    stateChangeCounts.clear();
     searchQuery = "";
+    automationEdges = [];
+    automationEdgesByEntity = new Map();
+    automationLoaded = false;
+    automationLoading = false;
     transform = createTransform();
     saveSettings();
     const container = wrapper.parentElement!;
@@ -693,8 +971,168 @@ function rebuildClusters(): void {
   }
 }
 
+const AUTOMATION_COLORS: Record<AutomationRelation, string> = {
+  trigger: "#7e57c2",
+  condition: "#ffca28",
+  action: "#42a5f5",
+};
+
+const AUTOMATION_DASHES: Record<AutomationRelation, number[]> = {
+  trigger: [],
+  condition: [6, 4],
+  action: [2, 3],
+};
+
+async function loadAutomationEdges(): Promise<void> {
+  if (!haConnection || automationLoading) return;
+  automationLoading = true;
+
+  const automationEntityIds: string[] = [];
+  for (const id of entityNodeMap.keys()) {
+    if (id.startsWith("automation.")) automationEntityIds.push(id);
+  }
+
+  debugLog("system", `Automation: found ${automationEntityIds.length} automation entities in graph`);
+
+  const knownEntityIds = new Set(entityNodeMap.keys());
+
+  try {
+    automationEdges = await fetchAutomationEdges(haConnection, automationEntityIds, knownEntityIds);
+    debugLog("system", `Automation: fetched ${automationEdges.length} edges`);
+  } catch (err) {
+    debugLog("system", `Automation: fetch failed`, String(err));
+    automationEdges = [];
+  }
+
+  automationEdgesByEntity = new Map();
+  for (const edge of automationEdges) {
+    let list = automationEdgesByEntity.get(edge.automationEntityId);
+    if (!list) { list = []; automationEdgesByEntity.set(edge.automationEntityId, list); }
+    list.push(edge);
+
+    list = automationEdgesByEntity.get(edge.targetEntityId);
+    if (!list) { list = []; automationEdgesByEntity.set(edge.targetEntityId, list); }
+    list.push(edge);
+  }
+
+  automationLoaded = true;
+  automationLoading = false;
+  if (onAutomationLoaded) onAutomationLoaded();
+  ensureLoop();
+}
+
+function drawAutomationEdges(drawCtx: CanvasRenderingContext2D): void {
+  if (!showAutomationEdges || automationEdges.length === 0) return;
+
+  const invK = 1 / transform.k;
+  const hoveredEntityId = hoveredNode?.tree.entityId;
+  const hoveredEdges = hoveredEntityId ? automationEdgesByEntity.get(hoveredEntityId) : undefined;
+  const hasHoveredEdges = hoveredEdges && hoveredEdges.length > 0;
+
+  for (const edge of automationEdges) {
+    const sourceNode = entityNodeMap.get(edge.automationEntityId);
+    const targetNode = entityNodeMap.get(edge.targetEntityId);
+    if (!sourceNode || !targetNode) continue;
+
+    const isConnected = hasHoveredEdges && (
+      edge.automationEntityId === hoveredEntityId || edge.targetEntityId === hoveredEntityId
+    );
+
+    const lineAlpha = hasHoveredEdges ? (isConnected ? 0.85 : 0.15) : 0.5;
+    const lineWidth = (hasHoveredEdges && isConnected ? 2.5 : 1.5) * invK;
+
+    drawCtx.globalAlpha = lineAlpha;
+    drawCtx.strokeStyle = AUTOMATION_COLORS[edge.relation];
+    drawCtx.lineWidth = lineWidth;
+    drawCtx.setLineDash(AUTOMATION_DASHES[edge.relation].map((v) => v * invK));
+
+    drawCtx.beginPath();
+    drawCtx.moveTo(sourceNode.x, sourceNode.y);
+    drawCtx.lineTo(targetNode.x, targetNode.y);
+    drawCtx.stroke();
+  }
+
+  drawCtx.setLineDash([]);
+  drawCtx.globalAlpha = 1;
+}
+
+function getAutomationTooltipHtml(entityId: string): string {
+  const edges = automationEdgesByEntity.get(entityId);
+  if (!edges || edges.length === 0) return "";
+
+  const isAutomation = entityId.startsWith("automation.");
+
+  if (isAutomation) {
+    const byRelation = new Map<AutomationRelation, string[]>();
+    for (const edge of edges) {
+      if (edge.automationEntityId !== entityId) continue;
+      let list = byRelation.get(edge.relation);
+      if (!list) { list = []; byRelation.set(edge.relation, list); }
+      list.push(edge.targetEntityId);
+    }
+
+    if (byRelation.size === 0) return "";
+
+    let html = `<br><span style="color:#9e9e9e;font-size:0.7rem">References:</span>`;
+    for (const [relation, ids] of byRelation) {
+      const colorHex = AUTOMATION_COLORS[relation];
+      html += `<br><span style="color:${colorHex};font-size:0.7rem">${relation}:</span> `;
+      html += `<span style="color:#bbb;font-size:0.7rem">${ids.join(", ")}</span>`;
+    }
+    return html;
+  }
+
+  // Target entity: show which automations reference it
+  const byAutomation = new Map<string, AutomationRelation[]>();
+  for (const edge of edges) {
+    if (edge.targetEntityId !== entityId) continue;
+    let list = byAutomation.get(edge.automationEntityId);
+    if (!list) { list = []; byAutomation.set(edge.automationEntityId, list); }
+    list.push(edge.relation);
+  }
+
+  if (byAutomation.size === 0) return "";
+
+  let html = `<br><span style="color:#9e9e9e;font-size:0.7rem">Used by automations:</span>`;
+  for (const [autoId, relations] of byAutomation) {
+    const state = currentStates.get(autoId);
+    const name = state?.attributes.friendly_name ?? autoId;
+    const relLabels = relations.map((r) =>
+      `<span style="color:${AUTOMATION_COLORS[r]}">${r}</span>`
+    ).join(", ");
+    html += `<br><span style="font-size:0.7rem">${relLabels} in ${name}</span>`;
+  }
+  return html;
+}
+
+function pruneEmptyBranches(nodes: TreeNode[]): TreeNode[] {
+  const hasDescendant = new Set<TreeNode>();
+
+  for (const n of nodes) {
+    if (n.kind === "entity") {
+      let cur = n.parent;
+      while (cur && !hasDescendant.has(cur)) {
+        hasDescendant.add(cur);
+        cur = cur.parent;
+      }
+    }
+  }
+
+  return nodes.filter((n) => n.kind === "entity" || n.kind === "root" || hasDescendant.has(n));
+}
+
 function buildGraph(root: TreeNode): void {
   const allNodes = flatten(root);
+
+  allTreeNodesById = new Map();
+  allEntityTreeNodes = new Map();
+  for (const n of allNodes) {
+    allTreeNodesById.set(n.id, n);
+    if (n.kind === "entity" && n.entityId) {
+      allEntityTreeNodes.set(n.entityId, n);
+    }
+  }
+
   let nodes: TreeNode[];
   if (!showEntities) {
     nodes = allNodes.filter((n) => n.kind !== "entity");
@@ -713,6 +1151,21 @@ function buildGraph(root: TreeNode): void {
     });
   } else {
     nodes = allNodes;
+  }
+
+  if (appearOnChange) {
+    nodes = nodes.filter((n) => {
+      if (n.kind === "root") return true;
+      return revealedNodes.has(n.id);
+    });
+  }
+
+  if (automationOnly) {
+    nodes = nodes.filter((n) => {
+      if (n.kind !== "entity") return true;
+      return n.entityId !== undefined && automationEdgesByEntity.has(n.entityId);
+    });
+    nodes = pruneEmptyBranches(nodes);
   }
   const map = new Map<TreeNode, FNode>();
 
@@ -1669,6 +2122,8 @@ function draw(): void {
     ctx.stroke();
   }
 
+  drawAutomationEdges(ctx);
+
   for (const n of fnodes) {
     const unavail = unavailableMode === "pulse" && isUnavailable(n);
     ctx.globalAlpha = unavail ? 0.3 : 1;
@@ -1751,7 +2206,17 @@ function onMouseMove(e: MouseEvent): void {
   const changed = hoveredNode !== n;
   hoveredNode = n;
   if (n) {
-    showTip(e.clientX, e.clientY, n.tree, currentStates);
+    let extra = "";
+    if (n.tree.entityId) {
+      const count = stateChangeCounts.get(n.tree.entityId);
+      if (count && count > 0) {
+        extra += `<br><span style="color:#9e9e9e;font-size:0.7rem">Changes: ${count}</span>`;
+      }
+      if (showAutomationEdges) {
+        extra += getAutomationTooltipHtml(n.tree.entityId);
+      }
+    }
+    showTip(e.clientX, e.clientY, n.tree, currentStates, extra || undefined);
     if (canvas) canvas.style.cursor = "pointer";
   } else {
     hideTip();

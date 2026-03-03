@@ -88,7 +88,7 @@ async function initTree(connection: Connection) {
   const states = new Map<string, HaState>();
 
   const visualizations = [
-    createForceViz(registries),
+    createForceViz(registries, undefined, connection),
     dendrogramViz,
     globeViz,
     hyperbolicViz,

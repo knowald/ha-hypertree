@@ -17,7 +17,8 @@ export function showTooltip(
   y: number,
   label: string,
   entityId: string | undefined,
-  states: Map<string, HaState>
+  states: Map<string, HaState>,
+  extraHtml?: string,
 ): void {
   const el = ensureTooltip();
 
@@ -31,6 +32,10 @@ export function showTooltip(
       const changed = new Date(state.last_changed);
       html += `<br>Changed: ${changed.toLocaleString()}`;
     }
+  }
+
+  if (extraHtml) {
+    html += extraHtml;
   }
 
   el.innerHTML = html;

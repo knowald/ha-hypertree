@@ -11,9 +11,10 @@ export function showTip(
   x: number,
   y: number,
   node: TreeNode,
-  states: Map<string, HaState>
+  states: Map<string, HaState>,
+  extraHtml?: string,
 ): void {
-  showTooltip(x, y, node.label, node.entityId, states);
+  showTooltip(x, y, node.label, node.entityId, states, extraHtml);
 }
 
 export function hideTip(): void {
