@@ -924,7 +924,6 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   resetPosBtn.className = "force-reset-btn";
   resetPosBtn.textContent = "Reset positions";
   resetPosBtn.addEventListener("click", () => {
-    transform = createTransform();
     rebuildGraph();
   });
   buttons.appendChild(resetPosBtn);
