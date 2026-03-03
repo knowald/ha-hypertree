@@ -5,7 +5,7 @@ export interface ZoomTransform {
 }
 
 const ZOOM_FACTOR = 1.1;
-const MIN_ZOOM = 0.3;
+const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 20;
 
 export function createTransform(): ZoomTransform {
