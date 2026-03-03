@@ -716,7 +716,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     syncSettingsState();
     rebuildGraph();
     saveSettings();
-  });
+  }, "Nodes start hidden and appear as state changes arrive");
   entitiesSubOptions.appendChild(appearOnChangeToggle);
   modeSection.body.appendChild(entitiesSubOptions);
 
@@ -731,7 +731,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
       ensureLoop();
     }
     saveSettings();
-  });
+  }, "Convex hull outlines around groups");
   modeSection.body.appendChild(hullToggle);
 
   const hullSubOptions = document.createElement("div");
@@ -761,18 +761,18 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   const constellationSubOptions = document.createElement("div");
   constellationSubOptions.className = "force-sub-options";
   constellationSubOptions.hidden = !constellation;
-  constellationSubOptions.appendChild(makeSlider("Glow brightness", 0, 3, glowBrightness, 0.1, (v) => { glowBrightness = v; saveSettings(); }));
+  constellationSubOptions.appendChild(makeSlider("Brightness", 0, 3, glowBrightness, 0.1, (v) => { glowBrightness = v; saveSettings(); }, "Overall star and edge opacity"));
   constellationSubOptions.appendChild(makeSlider("Star size", 0.2, 3, starSize, 0.1, (v) => { starSize = v; saveSettings(); }));
-  constellationSubOptions.appendChild(makeSlider("Glow intensity", 0.2, 3, glowIntensity, 0.1, (v) => { glowIntensity = v; saveSettings(); }));
-  constellationSubOptions.appendChild(makeSlider("Glow size", 2, 16, glowSize, 0.5, (v) => { glowSize = v; saveSettings(); }));
-  constellationSubOptions.appendChild(makeSlider("Parent glow", 0.2, 5, parentGlowIntensity, 0.1, (v) => { parentGlowIntensity = v; saveSettings(); }));
-  constellationSubOptions.appendChild(makeSlider("Effect scale", 0.5, 5, effectScale, 0.1, (v) => { effectScale = v; saveSettings(); }));
+  constellationSubOptions.appendChild(makeSlider("Halo intensity", 0.2, 3, glowIntensity, 0.1, (v) => { glowIntensity = v; saveSettings(); }, "Glow gradient spread and strength"));
+  constellationSubOptions.appendChild(makeSlider("Halo size", 2, 16, glowSize, 0.5, (v) => { glowSize = v; saveSettings(); }, "Base glow radius around stars"));
+  constellationSubOptions.appendChild(makeSlider("Parent halo", 0.2, 5, parentGlowIntensity, 0.1, (v) => { parentGlowIntensity = v; saveSettings(); }, "Halo for area, domain, and device nodes"));
+  constellationSubOptions.appendChild(makeSlider("Effect scale", 0.5, 5, effectScale, 0.1, (v) => { effectScale = v; saveSettings(); }, "Size of state-change effects"));
   constellationSubOptions.appendChild(makeSlider("Twinkle speed", 0, 5, twinkleSpeed, 0.1, (v) => { twinkleSpeed = v; saveSettings(); }));
-  constellationSubOptions.appendChild(makeSlider("Twinkle size", 0, 1, twinkleSize, 0.05, (v) => { twinkleSize = v; saveSettings(); }));
-  constellationSubOptions.appendChild(makeSlider("Line glow", 0, 3, lineGlow, 0.1, (v) => { lineGlow = v; saveSettings(); }));
+  constellationSubOptions.appendChild(makeSlider("Twinkle size", 0, 1, twinkleSize, 0.05, (v) => { twinkleSize = v; saveSettings(); }, "Halo radius pulsing with twinkle"));
+  constellationSubOptions.appendChild(makeSlider("Edge glow", 0, 3, lineGlow, 0.1, (v) => { lineGlow = v; saveSettings(); }, "Glow on connection lines"));
   constellationSubOptions.appendChild(makeSelect("Effect",
     ["supernova", "shooting-star", "flare", "pulse-wave", "color-shift"],
-    starEffect, (v) => { starEffect = v as StarEffect; saveSettings(); }));
+    starEffect, (v) => { starEffect = v as StarEffect; saveSettings(); }, "Animation on entity state change"));
   modeSection.body.appendChild(constellationSubOptions);
 
   panel.appendChild(modeSection.el);
@@ -782,15 +782,15 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   const displayToggles = document.createElement("div");
   displayToggles.className = "force-toggles";
   displayToggles.appendChild(makeToggle("Labels", showLabels, (v) => { showLabels = v; saveSettings(); }));
-  changedOnlyToggle = makeToggle("Changed only", changedOnly, (v) => {
+  changedOnlyToggle = makeToggle("Skip unchanged", changedOnly, (v) => {
     changedOnly = v;
     saveSettings();
-  });
+  }, "Skip glow when state value hasn't changed");
   displayToggles.appendChild(changedOnlyToggle);
   displaySection.body.appendChild(displayToggles);
   displaySection.body.appendChild(makeSlider("Label size", 4, 24, labelSize, 1, (v) => { labelSize = v; saveSettings(); }));
-  displaySection.body.appendChild(makeSlider("Parent label zoom", 0.5, 5, parentLabelZoom, 0.1, (v) => { parentLabelZoom = v; saveSettings(); }));
-  displaySection.body.appendChild(makeSlider("Entity label zoom", 0.5, 5, entityLabelZoom, 0.1, (v) => { entityLabelZoom = v; saveSettings(); }));
+  displaySection.body.appendChild(makeSlider("Parent label zoom", 0.5, 5, parentLabelZoom, 0.1, (v) => { parentLabelZoom = v; saveSettings(); }, "Zoom level to show structural labels"));
+  displaySection.body.appendChild(makeSlider("Entity label zoom", 0.5, 5, entityLabelZoom, 0.1, (v) => { entityLabelZoom = v; saveSettings(); }, "Zoom level to show entity labels"));
   displaySection.body.appendChild(makeSlider("Entity dot size", 1, 16, entityDotSize, 0.5, (v) => {
     entityDotSize = v;
     for (const fn of fnodes) {
@@ -820,7 +820,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     } else {
       rebuildGraph();
     }
-  });
+  }, "Hide entities not referenced by any automation");
   autoToggles.appendChild(autoOnlyToggle);
 
   onAutomationLoaded = () => {
@@ -838,8 +838,8 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   const physicsSection = makeSection("Physics", false);
   physicsSection.body.appendChild(makeSlider("Repulsion", 100, 3000, repulsion, 10, (v) => { repulsion = v; reheat(); saveSettings(); }));
   physicsSection.body.appendChild(makeSlider("Spring length", 10, 120, springLen, 1, (v) => { springLen = v; reheat(); saveSettings(); }));
-  physicsSection.body.appendChild(makeSlider("Spring stiffness", 0.005, 0.15, springK, 0.005, (v) => { springK = v; reheat(); saveSettings(); }));
-  physicsSection.body.appendChild(makeSlider("Damping", 0.5, 0.99, damping, 0.01, (v) => { damping = v; reheat(); saveSettings(); }));
+  physicsSection.body.appendChild(makeSlider("Spring stiffness", 0.005, 0.15, springK, 0.005, (v) => { springK = v; reheat(); saveSettings(); }, "Pull strength between connected nodes"));
+  physicsSection.body.appendChild(makeSlider("Damping", 0.5, 0.99, damping, 0.01, (v) => { damping = v; reheat(); saveSettings(); }, "Velocity decay per frame"));
   panel.appendChild(physicsSection.el);
 
   // -- Colors section --
@@ -1082,9 +1082,10 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   return wrapper;
 }
 
-function makeToggle(label: string, initial: boolean, onChange: (v: boolean) => void): HTMLLabelElement {
+function makeToggle(label: string, initial: boolean, onChange: (v: boolean) => void, tooltip?: string): HTMLLabelElement {
   const el = document.createElement("label");
   el.className = "toggle-label";
+  if (tooltip) el.title = tooltip;
   const input = document.createElement("input");
   input.type = "checkbox";
   input.checked = initial;
@@ -1094,9 +1095,10 @@ function makeToggle(label: string, initial: boolean, onChange: (v: boolean) => v
   return el;
 }
 
-function makeSelect(label: string, options: string[], initial: string, onChange: (v: string) => void): HTMLLabelElement {
+function makeSelect(label: string, options: string[], initial: string, onChange: (v: string) => void, tooltip?: string): HTMLLabelElement {
   const el = document.createElement("label");
   el.className = "toggle-label";
+  if (tooltip) el.title = tooltip;
   el.appendChild(document.createTextNode(label));
   const select = document.createElement("select");
   select.className = "force-select";
@@ -1114,10 +1116,11 @@ function makeSelect(label: string, options: string[], initial: string, onChange:
 
 function makeSlider(
   label: string, min: number, max: number, initial: number, step: number,
-  onChange: (v: number) => void
+  onChange: (v: number) => void, tooltip?: string,
 ): HTMLLabelElement {
   const el = document.createElement("label");
   el.className = "force-slider-label";
+  if (tooltip) el.title = tooltip;
   const nameSpan = document.createElement("span");
   nameSpan.textContent = label;
   const valueSpan = document.createElement("span");
