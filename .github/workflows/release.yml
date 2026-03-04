@@ -43,4 +43,16 @@ jobs:
           git tag "v${VERSION}"
           git push origin master --tags
 
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Extract the section for this version (between its ## heading and the next ## heading)
+          awk -v ver="$VERSION" '
+            /^## / { if (found) exit; if (index($0, ver)) { found=1; next } }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+
       - uses: softprops/action-gh-release@v2
+        with:
+          body_path: release_notes.md
