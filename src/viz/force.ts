@@ -1392,16 +1392,43 @@ function buildGraph(root: TreeNode): void {
     nodes = pruneEmptyBranches(nodes);
   }
   const map = new Map<TreeNode, FNode>();
+  const nodeSet = new Set(nodes);
+
+  // Radial tree layout for initial positions
+  const positions = new Map<TreeNode, { x: number; y: number }>();
+  const cx = width / 2 || 400;
+  const cy = height / 2 || 300;
+
+  function layoutRadial(node: TreeNode, x: number, y: number, angleStart: number, angleSpan: number, depth: number): void {
+    positions.set(node, { x, y });
+    const children = node.children.filter((c) => nodeSet.has(c));
+    if (children.length === 0) return;
+    const radius = springLen * (depth === 0 ? 1.5 : 1);
+    let offset = angleStart;
+    const totalLeaves = children.reduce((s, c) => s + Math.max(1, c.leafCount), 0);
+    for (const child of children) {
+      const share = (Math.max(1, child.leafCount) / totalLeaves) * angleSpan;
+      const angle = offset + share / 2;
+      layoutRadial(child, x + Math.cos(angle) * radius, y + Math.sin(angle) * radius, offset, share, depth + 1);
+      offset += share;
+    }
+  }
+
+  const rootNode = nodes.find((n) => n.kind === "root");
+  if (rootNode) {
+    layoutRadial(rootNode, cx, cy, 0, Math.PI * 2, 0);
+  }
 
   fnodes = nodes.map((n) => {
     const r = n.kind === "root" ? 10 : n.kind === "area" ? 8
       : (n.kind === "domain" || n.kind === "device") ? 6 : entityDotSize;
     let hash = 0;
     for (let i = 0; i < n.id.length; i++) hash = ((hash << 5) - hash + n.id.charCodeAt(i)) | 0;
+    const pos = positions.get(n);
     const fn: FNode = {
       tree: n,
-      x: Math.random() * 600 + 100,
-      y: Math.random() * 400 + 100,
+      x: pos ? pos.x : cx + (Math.random() - 0.5) * 100,
+      y: pos ? pos.y : cy + (Math.random() - 0.5) * 100,
       vx: 0, vy: 0,
       fx: null, fy: null,
       r,
@@ -1435,6 +1462,12 @@ function buildGraph(root: TreeNode): void {
 
   glowTimestamps = new Map();
   rebuildClusters();
+
+  // Warm up: run simulation ticks before first render so the layout is mostly settled
+  for (let i = 0; i < 150; i++) {
+    simulate();
+    alpha *= alphaDecay;
+  }
 }
 
 function resize(): void {
