@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.1 - 2026-03-04
+
+### Added
+
+- Add radial tree initial layout so the graph appears structured from the first frame
+- Add 150 warm-up simulation ticks before first render for near-instant settling
+- Add tooltips on hover for unclear settings (physics, constellation, display)
+
+### Changed
+
+- Rename constellation glow settings for clarity: Brightness, Halo intensity, Halo size, Parent halo, Edge glow
+- Rename "Changed only" to "Skip unchanged"
+
 ## 0.8.0 - 2026-03-03
 
 ### Added
