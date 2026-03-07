@@ -39,7 +39,7 @@ let canvas: HTMLCanvasElement | null = null;
 let glassLabels: HTMLDivElement[] = [];
 let glassContainer: HTMLDivElement | null = null;
 let ctx: CanvasRenderingContext2D | null = null;
-let settingsPanel: HTMLDivElement | null = null;
+let settingsPanel: { toolbar: HTMLDivElement } | null = null;
 let frame = 0;
 let currentStates: Map<string, HaState> = new Map();
 let currentRegistries: Registries | null = null;
@@ -380,10 +380,7 @@ export function createForceViz(registries: Registries, haUrl?: string, connectio
         glassContainer = null;
         glassLabels = [];
       }
-      if (settingsPanel) {
-        settingsPanel.remove();
-        settingsPanel = null;
-      }
+      removeSettings();
       fnodes = [];
       fedges = [];
       clusters = [];
@@ -601,38 +598,99 @@ function makeSection(label: string, startOpen = true): Section {
   return { el: section, body };
 }
 
-function createSettings(container: HTMLElement): HTMLDivElement {
-  const wrapper = document.createElement("div");
-  wrapper.className = "force-settings";
-  container.appendChild(wrapper);
+function removeSettings(): void {
+  if (settingsPanel) {
+    settingsPanel.toolbar.remove();
+    settingsPanel = null;
+  }
+}
 
-  const toggleBtn = document.createElement("button");
-  toggleBtn.className = "force-settings-toggle";
-  toggleBtn.textContent = "\u2699";
-  toggleBtn.title = "Toggle settings";
-  wrapper.appendChild(toggleBtn);
-
-  const panel = document.createElement("div");
-  panel.className = "force-settings-body";
-  panel.hidden = true;
-  wrapper.appendChild(panel);
-
-  toggleBtn.addEventListener("click", () => {
-    panel.hidden = !panel.hidden;
-    wrapper.classList.toggle("force-settings-open", !panel.hidden);
-  });
+function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
+  // -- Canvas toolbar (always visible, top-right) --
+  const toolbar = document.createElement("div");
+  toolbar.className = "canvas-toolbar";
+  container.appendChild(toolbar);
 
   const searchInput = document.createElement("input");
   searchInput.type = "text";
-  searchInput.className = "force-search";
+  searchInput.className = "canvas-toolbar-search";
   searchInput.placeholder = "Search entities...";
+  searchInput.value = searchQuery;
   searchInput.addEventListener("input", () => {
     searchQuery = searchInput.value.toLowerCase();
     ensureLoop();
   });
-  panel.appendChild(searchInput);
+  toolbar.appendChild(searchInput);
 
-  // Forward-declare toggle references for cross-section disabled state management
+  const resetPosBtn = document.createElement("button");
+  resetPosBtn.className = "canvas-toolbar-btn";
+  resetPosBtn.textContent = "\u21bb";
+  resetPosBtn.title = "Reset positions";
+  resetPosBtn.addEventListener("click", () => rebuildGraph());
+  toolbar.appendChild(resetPosBtn);
+
+  const gearBtn = document.createElement("button");
+  gearBtn.className = "canvas-toolbar-btn";
+  gearBtn.textContent = "\u2699";
+  gearBtn.title = "Settings";
+  toolbar.appendChild(gearBtn);
+
+  // -- Dropdown panel (anchored below toolbar) --
+  const panel = document.createElement("div");
+  panel.className = "settings-panel";
+  toolbar.appendChild(panel);
+
+  gearBtn.addEventListener("click", () => {
+    const opening = !panel.classList.contains("open");
+    panel.classList.toggle("open", opening);
+    gearBtn.classList.toggle("active", opening);
+  });
+
+  // -- Tab bar --
+  const tabBar = document.createElement("div");
+  tabBar.className = "settings-tabs";
+  const tabNames = ["View", "Style", "Advanced"];
+  const tabBtns: HTMLButtonElement[] = [];
+  const tabPanels: HTMLDivElement[] = [];
+
+  for (const name of tabNames) {
+    const btn = document.createElement("button");
+    btn.className = "settings-tab";
+    btn.textContent = name;
+    btn.type = "button";
+    tabBar.appendChild(btn);
+    tabBtns.push(btn);
+  }
+  panel.appendChild(tabBar);
+
+  const body = document.createElement("div");
+  body.className = "settings-body";
+  panel.appendChild(body);
+
+  for (const _name of tabNames) {
+    const tabContent = document.createElement("div");
+    tabContent.className = "settings-tab-content";
+    body.appendChild(tabContent);
+    tabPanels.push(tabContent);
+  }
+
+  function activateTab(index: number): void {
+    for (let i = 0; i < tabBtns.length; i++) {
+      tabBtns[i].classList.toggle("active", i === index);
+      tabPanels[i].classList.toggle("active", i === index);
+    }
+  }
+
+  for (let i = 0; i < tabBtns.length; i++) {
+    tabBtns[i].addEventListener("click", () => activateTab(i));
+  }
+  activateTab(0);
+
+  const viewTab = tabPanels[0];
+  const styleTab = tabPanels[1];
+  const advancedTab = tabPanels[2];
+
+  // -- Shared disabled state logic --
   let entitiesToggle!: HTMLLabelElement;
   let unavailableSelect!: HTMLLabelElement;
   let changedOnlyToggle!: HTMLLabelElement;
@@ -650,35 +708,118 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   function syncSettingsState(): void {
     const entitiesOff = !showEntities;
     const aocOn = appearOnChange;
-
-    // Appear on change forces entities on, so lock the toggle
     setDisabled(entitiesToggle, aocOn);
-
-    // These are all entity-specific — irrelevant when entities are off
     setDisabled(unavailableSelect, entitiesOff || aocOn);
     setDisabled(changedOnlyToggle, entitiesOff);
     setDisabled(appearOnChangeToggle, entitiesOff);
-
-    // Automation-only needs entities visible AND automation data loaded
-    setDisabled(autoOnlyToggle, entitiesOff || !automationLoaded);
+    setDisabled(autoOnlyToggle, entitiesOff || !automationLoaded || !showAutomationEdges);
   }
 
-  // -- Mode section (top) --
-  const modeSection = makeSection("Mode");
+  // =====================
+  // VIEW TAB
+  // =====================
 
-  modeSection.body.appendChild(makeSelect("Structure", ["domain", "device"], structureMode, (v) => {
+  viewTab.appendChild(makeSelect("Structure", ["domain", "device"], structureMode, (v) => {
     structureMode = v as StructureMode;
     rebuildWithStructure();
     saveSettings();
   }));
 
-  modeSection.body.appendChild(makeSelect("Layout", ["tree", "scatter"], initialLayout, (v) => {
+  viewTab.appendChild(makeSelect("Layout", ["tree", "scatter"], initialLayout, (v) => {
     initialLayout = v as InitialLayout;
     rebuildGraph();
     saveSettings();
   }, "Initial node positions: tree (structured) or scatter (random)"));
 
-  // Entities + sub-options
+  // -- Visual mode radio (default / constellation / hulls / automations) --
+  const visualModeGroup = document.createElement("div");
+  visualModeGroup.className = "visual-mode-group";
+
+  const currentVisualMode = showAutomationEdges ? "automations" : constellation ? "constellation" : showHulls ? "hulls" : "default";
+  const visualModes = ["default", "constellation", "hulls", "automations"] as const;
+
+  const constellationSubOptions = document.createElement("div");
+  constellationSubOptions.className = "force-sub-options";
+  constellationSubOptions.hidden = currentVisualMode !== "constellation";
+  const hullSubOptions = document.createElement("div");
+  hullSubOptions.className = "force-sub-options";
+  hullSubOptions.hidden = currentVisualMode !== "hulls";
+  const automationSubOptions = document.createElement("div");
+  automationSubOptions.className = "force-sub-options";
+  automationSubOptions.hidden = currentVisualMode !== "automations";
+
+  function applyVisualMode(mode: string): void {
+    constellation = mode === "constellation";
+    showHulls = mode === "hulls";
+    showAutomationEdges = mode === "automations";
+    constellationSubOptions.hidden = mode !== "constellation";
+    hullSubOptions.hidden = mode !== "hulls";
+    automationSubOptions.hidden = mode !== "automations";
+    if (mode === "automations" && !automationLoaded && !automationLoading) loadAutomationEdges();
+    if (mode !== "automations" && automationOnly) {
+      automationOnly = false;
+      autoOnlyToggle.querySelector("input")!.checked = false;
+      rebuildGraph();
+    }
+    ensureLoop();
+    saveSettings();
+  }
+
+  for (const mode of visualModes) {
+    const label = document.createElement("label");
+    label.className = "visual-mode-option";
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "visual-mode";
+    radio.value = mode;
+    radio.checked = mode === currentVisualMode;
+    radio.addEventListener("change", () => applyVisualMode(mode));
+    label.appendChild(radio);
+    label.appendChild(document.createTextNode(mode.charAt(0).toUpperCase() + mode.slice(1)));
+    visualModeGroup.appendChild(label);
+
+    if (mode === "constellation") visualModeGroup.appendChild(constellationSubOptions);
+    if (mode === "hulls") visualModeGroup.appendChild(hullSubOptions);
+    if (mode === "automations") visualModeGroup.appendChild(automationSubOptions);
+  }
+
+  constellationSubOptions.appendChild(makeSlider("Brightness", 0, 3, glowBrightness, 0.1, (v) => { glowBrightness = v; saveSettings(); }, "Overall star and edge opacity"));
+  constellationSubOptions.appendChild(makeSlider("Star size", 0.2, 3, starSize, 0.1, (v) => { starSize = v; saveSettings(); }));
+  constellationSubOptions.appendChild(makeSlider("Halo intensity", 0.2, 3, glowIntensity, 0.1, (v) => { glowIntensity = v; saveSettings(); }, "Glow gradient spread and strength"));
+  constellationSubOptions.appendChild(makeSlider("Halo size", 2, 16, glowSize, 0.5, (v) => { glowSize = v; saveSettings(); }, "Base glow radius around stars"));
+  constellationSubOptions.appendChild(makeSlider("Parent halo", 0.2, 5, parentGlowIntensity, 0.1, (v) => { parentGlowIntensity = v; saveSettings(); }, "Halo for area, domain, and device nodes"));
+  constellationSubOptions.appendChild(makeSlider("Effect scale", 0.5, 5, effectScale, 0.1, (v) => { effectScale = v; saveSettings(); }, "Size of state-change effects"));
+  constellationSubOptions.appendChild(makeSlider("Twinkle speed", 0, 5, twinkleSpeed, 0.1, (v) => { twinkleSpeed = v; saveSettings(); }));
+  constellationSubOptions.appendChild(makeSlider("Twinkle size", 0, 1, twinkleSize, 0.05, (v) => { twinkleSize = v; saveSettings(); }, "Halo radius pulsing with twinkle"));
+  constellationSubOptions.appendChild(makeSelect("Effect",
+    ["supernova", "shooting-star", "flare", "pulse-wave", "color-shift"],
+    starEffect, (v) => { starEffect = v as StarEffect; saveSettings(); }, "Animation on entity state change"));
+
+  hullSubOptions.appendChild(makeSelect("Grouping", ["area", "domain"], groupBy, (v) => {
+    groupBy = v as GroupMode;
+    rebuildClusters();
+    saveSettings();
+  }));
+
+  autoOnlyToggle = makeToggle("Automation entities only", automationOnly, (v) => {
+    automationOnly = v;
+    saveSettings();
+    if (v && !automationLoaded && !automationLoading) {
+      loadAutomationEdges();
+    } else {
+      rebuildGraph();
+    }
+  }, "Hide entities not referenced by any automation");
+  automationSubOptions.appendChild(autoOnlyToggle);
+
+  onAutomationLoaded = () => {
+    syncSettingsState();
+    if (automationOnly) rebuildGraph();
+  };
+
+  viewTab.appendChild(visualModeGroup);
+
+  // -- Entities + sub-options --
   entitiesToggle = makeToggle("Entities", showEntities, (v) => {
     showEntities = v;
     entitiesSubOptions.hidden = !v;
@@ -699,7 +840,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     rebuildGraph();
     saveSettings();
   });
-  modeSection.body.appendChild(entitiesToggle);
+  viewTab.appendChild(entitiesToggle);
 
   const entitiesSubOptions = document.createElement("div");
   entitiesSubOptions.className = "force-sub-options";
@@ -729,132 +870,35 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     saveSettings();
   }, "Nodes start hidden and appear as state changes arrive");
   entitiesSubOptions.appendChild(appearOnChangeToggle);
-  modeSection.body.appendChild(entitiesSubOptions);
+  viewTab.appendChild(entitiesSubOptions);
 
-  // Hulls + sub-options
-  const hullToggle = makeToggle("Hulls", showHulls, (v) => {
-    showHulls = v;
-    hullSubOptions.hidden = !v;
-    if (v && constellation) {
-      constellation = false;
-      constellationSubOptions.hidden = true;
-      constellationToggle.querySelector("input")!.checked = false;
-      ensureLoop();
-    }
-    saveSettings();
-  }, "Convex hull outlines around groups");
-  modeSection.body.appendChild(hullToggle);
+  // =====================
+  // STYLE TAB
+  // =====================
 
-  const hullSubOptions = document.createElement("div");
-  hullSubOptions.className = "force-sub-options";
-  hullSubOptions.hidden = !showHulls;
-  hullSubOptions.appendChild(makeSelect("Grouping", ["area", "domain"], groupBy, (v) => {
-    groupBy = v as GroupMode;
-    rebuildClusters();
-    saveSettings();
-  }));
-  modeSection.body.appendChild(hullSubOptions);
-
-  // Constellation + sub-options
-  const constellationToggle = makeToggle("Constellation", constellation, (v) => {
-    constellation = v;
-    constellationSubOptions.hidden = !v;
-    if (v && showHulls) {
-      showHulls = false;
-      hullSubOptions.hidden = true;
-      hullToggle.querySelector("input")!.checked = false;
-    }
-    ensureLoop();
-    saveSettings();
-  });
-  modeSection.body.appendChild(constellationToggle);
-
-  const constellationSubOptions = document.createElement("div");
-  constellationSubOptions.className = "force-sub-options";
-  constellationSubOptions.hidden = !constellation;
-  constellationSubOptions.appendChild(makeSlider("Brightness", 0, 3, glowBrightness, 0.1, (v) => { glowBrightness = v; saveSettings(); }, "Overall star and edge opacity"));
-  constellationSubOptions.appendChild(makeSlider("Star size", 0.2, 3, starSize, 0.1, (v) => { starSize = v; saveSettings(); }));
-  constellationSubOptions.appendChild(makeSlider("Halo intensity", 0.2, 3, glowIntensity, 0.1, (v) => { glowIntensity = v; saveSettings(); }, "Glow gradient spread and strength"));
-  constellationSubOptions.appendChild(makeSlider("Halo size", 2, 16, glowSize, 0.5, (v) => { glowSize = v; saveSettings(); }, "Base glow radius around stars"));
-  constellationSubOptions.appendChild(makeSlider("Parent halo", 0.2, 5, parentGlowIntensity, 0.1, (v) => { parentGlowIntensity = v; saveSettings(); }, "Halo for area, domain, and device nodes"));
-  constellationSubOptions.appendChild(makeSlider("Effect scale", 0.5, 5, effectScale, 0.1, (v) => { effectScale = v; saveSettings(); }, "Size of state-change effects"));
-  constellationSubOptions.appendChild(makeSlider("Twinkle speed", 0, 5, twinkleSpeed, 0.1, (v) => { twinkleSpeed = v; saveSettings(); }));
-  constellationSubOptions.appendChild(makeSlider("Twinkle size", 0, 1, twinkleSize, 0.05, (v) => { twinkleSize = v; saveSettings(); }, "Halo radius pulsing with twinkle"));
-  constellationSubOptions.appendChild(makeSelect("Effect",
-    ["supernova", "shooting-star", "flare", "pulse-wave", "color-shift"],
-    starEffect, (v) => { starEffect = v as StarEffect; saveSettings(); }, "Animation on entity state change"));
-  modeSection.body.appendChild(constellationSubOptions);
-
-  panel.appendChild(modeSection.el);
-
-  // -- Display section --
-  const displaySection = makeSection("Display");
-  const displayToggles = document.createElement("div");
-  displayToggles.className = "force-toggles";
-  displayToggles.appendChild(makeToggle("Labels", showLabels, (v) => { showLabels = v; saveSettings(); }));
+  styleTab.appendChild(makeToggle("Labels", showLabels, (v) => { showLabels = v; saveSettings(); }));
   changedOnlyToggle = makeToggle("Skip unchanged", changedOnly, (v) => {
     changedOnly = v;
     saveSettings();
   }, "Skip glow when state value hasn't changed");
-  displayToggles.appendChild(changedOnlyToggle);
-  displaySection.body.appendChild(displayToggles);
-  displaySection.body.appendChild(makeSlider("Label size", 4, 24, labelSize, 1, (v) => { labelSize = v; saveSettings(); }));
-  displaySection.body.appendChild(makeSlider("Parent label zoom", 0.5, 5, parentLabelZoom, 0.1, (v) => { parentLabelZoom = v; saveSettings(); }, "Zoom level to show structural labels"));
-  displaySection.body.appendChild(makeSlider("Entity label zoom", 0.5, 5, entityLabelZoom, 0.1, (v) => { entityLabelZoom = v; saveSettings(); }, "Zoom level to show entity labels"));
-  displaySection.body.appendChild(makeSlider("Entity dot size", 1, 16, entityDotSize, 0.5, (v) => {
+  styleTab.appendChild(changedOnlyToggle);
+
+  syncSettingsState();
+
+  styleTab.appendChild(makeSlider("Label size", 4, 24, labelSize, 1, (v) => { labelSize = v; saveSettings(); }));
+  styleTab.appendChild(makeSlider("Parent label zoom", 0.5, 5, parentLabelZoom, 0.1, (v) => { parentLabelZoom = v; saveSettings(); }, "Zoom level to show structural labels"));
+  styleTab.appendChild(makeSlider("Entity label zoom", 0.5, 5, entityLabelZoom, 0.1, (v) => { entityLabelZoom = v; saveSettings(); }, "Zoom level to show entity labels"));
+  styleTab.appendChild(makeSlider("Entity dot size", 1, 16, entityDotSize, 0.5, (v) => {
     entityDotSize = v;
     for (const fn of fnodes) {
       if (fn.tree.kind === "entity") fn.r = v;
     }
     saveSettings();
   }));
-  displaySection.body.appendChild(makeSlider("Connection brightness", 0, 3, lineGlow, 0.1, (v) => { lineGlow = v; saveSettings(); }, "Opacity of parent-child connection lines"));
-  panel.appendChild(displaySection.el);
+  styleTab.appendChild(makeSlider("Connection brightness", 0, 3, lineGlow, 0.1, (v) => { lineGlow = v; saveSettings(); }, "Opacity of parent-child connection lines"));
 
-  // -- Automations section --
-  const autoSection = makeSection("Automations", false);
-  const autoToggles = document.createElement("div");
-  autoToggles.className = "force-toggles";
-
-  autoToggles.appendChild(makeToggle("Show automation edges", showAutomationEdges, (v) => {
-    showAutomationEdges = v;
-    saveSettings();
-    if (v && !automationLoaded && !automationLoading) loadAutomationEdges();
-    ensureLoop();
-  }));
-
-  autoOnlyToggle = makeToggle("Automation entities only", automationOnly, (v) => {
-    automationOnly = v;
-    saveSettings();
-    if (v && !automationLoaded && !automationLoading) {
-      loadAutomationEdges();
-    } else {
-      rebuildGraph();
-    }
-  }, "Hide entities not referenced by any automation");
-  autoToggles.appendChild(autoOnlyToggle);
-
-  onAutomationLoaded = () => {
-    syncSettingsState();
-    if (automationOnly) rebuildGraph();
-  };
-
-  autoSection.body.appendChild(autoToggles);
-  panel.appendChild(autoSection.el);
-
-  // Apply initial disabled states
-  syncSettingsState();
-
-  // -- Physics section --
-  const physicsSection = makeSection("Physics", false);
-  physicsSection.body.appendChild(makeSlider("Repulsion", 100, 3000, repulsion, 10, (v) => { repulsion = v; reheat(); saveSettings(); }));
-  physicsSection.body.appendChild(makeSlider("Spring length", 10, 120, springLen, 1, (v) => { springLen = v; reheat(); saveSettings(); }));
-  physicsSection.body.appendChild(makeSlider("Spring stiffness", 0.005, 0.15, springK, 0.005, (v) => { springK = v; reheat(); saveSettings(); }, "Pull strength between connected nodes"));
-  physicsSection.body.appendChild(makeSlider("Damping", 0.5, 0.99, damping, 0.01, (v) => { damping = v; reheat(); saveSettings(); }, "Velocity decay per frame"));
-  panel.appendChild(physicsSection.el);
-
-  // -- Colors section --
-  const colorsSection = makeSection("Colors", false);
+  // -- Colors --
+  const colorsSection = makeSection("Colors");
 
   const bgSwatch = document.createElement("label");
   bgSwatch.className = "force-color-swatch";
@@ -914,30 +958,34 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   function syncColorSwatches(): void {
     const colors = getDomainColors();
     for (const swatch of colorGrid.children) {
-      const label = swatch as HTMLLabelElement;
-      const domain = label.title;
-      const dot = label.querySelector(".force-color-dot") as HTMLSpanElement;
-      const input = label.querySelector("input") as HTMLInputElement;
-      if (dot && input && domain in colors) {
-        dot.style.background = colors[domain];
-        input.value = colors[domain];
+      const el = swatch as HTMLLabelElement;
+      const d = el.title;
+      const dot = el.querySelector(".force-color-dot") as HTMLSpanElement;
+      const inp = el.querySelector("input") as HTMLInputElement;
+      if (dot && inp && d in colors) {
+        dot.style.background = colors[d];
+        inp.value = colors[d];
       }
     }
   }
 
-  panel.appendChild(colorsSection.el);
+  styleTab.appendChild(colorsSection.el);
+
+  // =====================
+  // ADVANCED TAB
+  // =====================
+
+  // -- Physics --
+  const physicsSection = makeSection("Physics");
+  physicsSection.body.appendChild(makeSlider("Repulsion", 100, 3000, repulsion, 10, (v) => { repulsion = v; reheat(); saveSettings(); }));
+  physicsSection.body.appendChild(makeSlider("Spring length", 10, 120, springLen, 1, (v) => { springLen = v; reheat(); saveSettings(); }));
+  physicsSection.body.appendChild(makeSlider("Spring stiffness", 0.005, 0.15, springK, 0.005, (v) => { springK = v; reheat(); saveSettings(); }, "Pull strength between connected nodes"));
+  physicsSection.body.appendChild(makeSlider("Damping", 0.5, 0.99, damping, 0.01, (v) => { damping = v; reheat(); saveSettings(); }, "Velocity decay per frame"));
+  advancedTab.appendChild(physicsSection.el);
 
   // -- Actions --
   const buttons = document.createElement("div");
   buttons.className = "force-buttons";
-
-  const resetPosBtn = document.createElement("button");
-  resetPosBtn.className = "force-reset-btn";
-  resetPosBtn.textContent = "Reset positions";
-  resetPosBtn.addEventListener("click", () => {
-    rebuildGraph();
-  });
-  buttons.appendChild(resetPosBtn);
 
   const randomColorBtn = document.createElement("button");
   randomColorBtn.className = "force-reset-btn";
@@ -993,14 +1041,14 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     if (revealTimer) { clearTimeout(revealTimer); revealTimer = null; }
     stateChangeCounts.clear();
     searchQuery = "";
+    searchInput.value = "";
     automationEdges = [];
     automationEdgesByEntity = new Map();
     automationLoaded = false;
     automationLoading = false;
     transform = createTransform();
     saveSettings();
-    const container = wrapper.parentElement!;
-    wrapper.remove();
+    removeSettings();
     settingsPanel = createSettings(container);
     rebuildWithStructure();
   });
@@ -1041,7 +1089,6 @@ function createSettings(container: HTMLElement): HTMLDivElement {
           }
           if (data.colors) setDomainColors(data.colors);
           spriteCache.clear();
-          // Reload settings into live variables
           const s = loadSettings();
           showHulls = s.showHulls;
           showLabels = s.showLabels;
@@ -1074,9 +1121,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
           appearOnChange = s.appearOnChange;
           backgroundColor = s.backgroundColor;
           initialLayout = s.initialLayout;
-          // Rebuild UI and graph
-          const container = wrapper.parentElement!;
-          wrapper.remove();
+          removeSettings();
           settingsPanel = createSettings(container);
           rebuildWithStructure();
           showToast("Settings imported");
@@ -1089,25 +1134,26 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   });
   buttons.appendChild(importBtn);
 
-  panel.appendChild(buttons);
+  advancedTab.appendChild(buttons);
 
+  // -- Connection (standalone only) --
   if (reconnectCallback) {
-    const connectionSection = makeSection("Connection", false);
+    const connectionSection = makeSection("Connection");
 
-    const saved = loadCredentials();
+    const savedCreds = loadCredentials();
 
     const urlInput = document.createElement("input");
     urlInput.type = "url";
     urlInput.className = "force-search";
     urlInput.placeholder = "https://homeassistant.local:8123";
-    urlInput.value = saved?.url ?? "";
+    urlInput.value = savedCreds?.url ?? "";
     connectionSection.body.appendChild(urlInput);
 
     const tokenInput = document.createElement("input");
     tokenInput.type = "password";
     tokenInput.className = "force-search";
     tokenInput.placeholder = "Long-lived access token";
-    tokenInput.value = saved?.token ?? "";
+    tokenInput.value = savedCreds?.token ?? "";
     connectionSection.body.appendChild(tokenInput);
 
     const reconnectBtn = document.createElement("button");
@@ -1122,10 +1168,10 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     });
     connectionSection.body.appendChild(reconnectBtn);
 
-    panel.appendChild(connectionSection.el);
+    advancedTab.appendChild(connectionSection.el);
   }
 
-  return wrapper;
+  return { toolbar };
 }
 
 function makeToggle(label: string, initial: boolean, onChange: (v: boolean) => void, tooltip?: string): HTMLLabelElement {
