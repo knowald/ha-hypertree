@@ -93,6 +93,10 @@ interface ForceSettings {
   appearOnChange: boolean;
   backgroundColor: string;
   initialLayout: InitialLayout;
+  hiddenDomains: string[];
+  hiddenAreas: string[];
+  stateFilter: string;
+  searchAsFilter: boolean;
 }
 
 type StarEffect = "supernova" | "shooting-star" | "flare" | "pulse-wave" | "color-shift";
@@ -130,6 +134,10 @@ const defaults: ForceSettings = {
   backgroundColor: "#000000",
   appearOnChange: false,
   initialLayout: "tree",
+  hiddenDomains: [],
+  hiddenAreas: [],
+  stateFilter: "",
+  searchAsFilter: false,
 };
 
 function loadSettings(): ForceSettings {
@@ -156,6 +164,7 @@ function saveSettings(): void {
     labelSize, entityDotSize, parentLabelZoom, entityLabelZoom,
     repulsion, springLen, springK, damping,
     automationOnly, appearOnChange, backgroundColor, initialLayout,
+    hiddenDomains, hiddenAreas, stateFilter, searchAsFilter,
   };
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* ignore */ }
 }
@@ -205,12 +214,17 @@ let automationOnly = saved.automationOnly;
 let appearOnChange = saved.appearOnChange;
 let backgroundColor = saved.backgroundColor;
 let initialLayout: InitialLayout = saved.initialLayout;
+let hiddenDomains: string[] = saved.hiddenDomains;
+let hiddenAreas: string[] = saved.hiddenAreas;
+let stateFilter = saved.stateFilter;
+let searchAsFilter = saved.searchAsFilter;
 let revealedNodes: Set<string> = new Set();
 let stateChangeCounts: Map<string, number> = new Map();
 let allTreeNodesById: Map<string, TreeNode> = new Map();
 let allEntityTreeNodes: Map<string, TreeNode> = new Map();
 let pendingReveals: string[] = [];
 let revealTimer: ReturnType<typeof setTimeout> | null = null;
+let collapsedDevices: Set<string> = new Set();
 
 let haConnection: Connection | null = null;
 let automationEdges: AutomationEdge[] = [];
@@ -392,6 +406,7 @@ export function createForceViz(registries: Registries, haUrl?: string, connectio
       automationLoading = false;
       onAutomationLoaded = null;
       revealedNodes.clear();
+      collapsedDevices.clear();
       stateChangeCounts.clear();
       allTreeNodesById = new Map();
       allEntityTreeNodes = new Map();
@@ -616,11 +631,30 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   searchInput.className = "canvas-toolbar-search";
   searchInput.placeholder = "Search entities...";
   searchInput.value = searchQuery;
+  let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   searchInput.addEventListener("input", () => {
     searchQuery = searchInput.value.toLowerCase();
-    ensureLoop();
+    if (searchAsFilter) {
+      if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(() => rebuildGraph(), 150);
+    } else {
+      ensureLoop();
+    }
   });
   toolbar.appendChild(searchInput);
+
+  const searchFilterBtn = document.createElement("button");
+  searchFilterBtn.className = "canvas-toolbar-btn search-filter-toggle";
+  searchFilterBtn.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M1 2.5A.5.5 0 0 1 1.5 2h13a.5.5 0 0 1 .4.8L10 9v4.5a.5.5 0 0 1-.7.4L7 12.5V9L1.1 2.8A.5.5 0 0 1 1 2.5z"/></svg>';
+  searchFilterBtn.title = "Filter mode: hide non-matching nodes";
+  searchFilterBtn.classList.toggle("active", searchAsFilter);
+  searchFilterBtn.addEventListener("click", () => {
+    searchAsFilter = !searchAsFilter;
+    searchFilterBtn.classList.toggle("active", searchAsFilter);
+    saveSettings();
+    if (searchQuery) rebuildGraph();
+  });
+  toolbar.appendChild(searchFilterBtn);
 
   const resetPosBtn = document.createElement("button");
   resetPosBtn.className = "canvas-toolbar-btn";
@@ -631,7 +665,7 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
 
   const gearBtn = document.createElement("button");
   gearBtn.className = "canvas-toolbar-btn";
-  gearBtn.textContent = "\u2699";
+  gearBtn.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><rect x="1" y="2.5" width="14" height="1.5" rx="0.75"/><rect x="1" y="7.25" width="14" height="1.5" rx="0.75"/><rect x="1" y="12" width="14" height="1.5" rx="0.75"/><circle cx="5" cy="3.25" r="2" fill="var(--surface)" stroke="currentColor" stroke-width="1.2"/><circle cx="11" cy="8" r="2" fill="var(--surface)" stroke="currentColor" stroke-width="1.2"/><circle cx="6.5" cy="12.75" r="2" fill="var(--surface)" stroke="currentColor" stroke-width="1.2"/></svg>';
   gearBtn.title = "Settings";
   toolbar.appendChild(gearBtn);
 
@@ -872,6 +906,180 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   entitiesSubOptions.appendChild(appearOnChangeToggle);
   viewTab.appendChild(entitiesSubOptions);
 
+  // -- Filters section --
+  const filtersSection = makeSection("Filters", false);
+
+  // Domain filter
+  const domainFilterLabel = document.createElement("div");
+  domainFilterLabel.style.cssText = "font-size:0.65rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.15rem";
+  domainFilterLabel.textContent = "Domains";
+  filtersSection.body.appendChild(domainFilterLabel);
+
+  const domainActions = document.createElement("div");
+  domainActions.className = "filter-actions";
+  const domainAllBtn = document.createElement("button");
+  domainAllBtn.className = "force-reset-btn";
+  domainAllBtn.textContent = "All";
+  domainAllBtn.style.cssText = "flex:1;padding:0.2rem 0";
+  const domainNoneBtn = document.createElement("button");
+  domainNoneBtn.className = "force-reset-btn";
+  domainNoneBtn.textContent = "None";
+  domainNoneBtn.style.cssText = "flex:1;padding:0.2rem 0";
+  domainActions.appendChild(domainAllBtn);
+  domainActions.appendChild(domainNoneBtn);
+  filtersSection.body.appendChild(domainActions);
+
+  const domainGrid = document.createElement("div");
+  domainGrid.className = "filter-grid";
+  filtersSection.body.appendChild(domainGrid);
+
+  const domains = domainList();
+  const domainCheckboxes: { domain: string; checkbox: HTMLInputElement }[] = [];
+
+  for (const d of domains) {
+    const item = document.createElement("label");
+    item.className = "filter-item";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !hiddenDomains.includes(d);
+    cb.addEventListener("change", () => {
+      if (cb.checked) {
+        hiddenDomains = hiddenDomains.filter((x) => x !== d);
+      } else {
+        hiddenDomains = [...hiddenDomains, d];
+      }
+      saveSettings();
+      rebuildGraph();
+    });
+    const label = document.createElement("span");
+    label.className = "filter-domain";
+    label.textContent = d;
+    item.appendChild(cb);
+    item.appendChild(label);
+    domainGrid.appendChild(item);
+    domainCheckboxes.push({ domain: d, checkbox: cb });
+  }
+
+  domainAllBtn.addEventListener("click", () => {
+    hiddenDomains = [];
+    for (const { checkbox } of domainCheckboxes) checkbox.checked = true;
+    saveSettings();
+    rebuildGraph();
+  });
+  domainNoneBtn.addEventListener("click", () => {
+    hiddenDomains = domains.slice();
+    for (const { checkbox } of domainCheckboxes) checkbox.checked = false;
+    saveSettings();
+    rebuildGraph();
+  });
+
+  // Area filter
+  const areaFilterLabel = document.createElement("div");
+  areaFilterLabel.style.cssText = "font-size:0.65rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;letter-spacing:0.05em;margin-top:0.4rem;margin-bottom:0.15rem";
+  areaFilterLabel.textContent = "Areas";
+  filtersSection.body.appendChild(areaFilterLabel);
+
+  const areaActions = document.createElement("div");
+  areaActions.className = "filter-actions";
+  const areaAllBtn = document.createElement("button");
+  areaAllBtn.className = "force-reset-btn";
+  areaAllBtn.textContent = "All";
+  areaAllBtn.style.cssText = "flex:1;padding:0.2rem 0";
+  const areaNoneBtn = document.createElement("button");
+  areaNoneBtn.className = "force-reset-btn";
+  areaNoneBtn.textContent = "None";
+  areaNoneBtn.style.cssText = "flex:1;padding:0.2rem 0";
+  areaActions.appendChild(areaAllBtn);
+  areaActions.appendChild(areaNoneBtn);
+  filtersSection.body.appendChild(areaActions);
+
+  const areaGrid = document.createElement("div");
+  areaGrid.className = "filter-grid";
+  filtersSection.body.appendChild(areaGrid);
+
+  const root = structureMode === "device"
+    ? buildTreeByDevice(currentRegistries!)
+    : buildTree(currentRegistries!);
+  const areas = root.children.filter((c) => c.kind === "area");
+  const areaCheckboxes: { areaId: string; checkbox: HTMLInputElement }[] = [];
+
+  for (const area of areas) {
+    const areaId = area.id.replace(/^area:/, "");
+    const item = document.createElement("label");
+    item.className = "filter-item";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !hiddenAreas.includes(areaId);
+    cb.addEventListener("change", () => {
+      if (cb.checked) {
+        hiddenAreas = hiddenAreas.filter((x) => x !== areaId);
+      } else {
+        hiddenAreas = [...hiddenAreas, areaId];
+      }
+      saveSettings();
+      rebuildGraph();
+    });
+    const label = document.createElement("span");
+    label.className = "filter-domain";
+    label.textContent = area.label;
+    item.appendChild(cb);
+    item.appendChild(label);
+    areaGrid.appendChild(item);
+    areaCheckboxes.push({ areaId, checkbox: cb });
+  }
+
+  areaAllBtn.addEventListener("click", () => {
+    hiddenAreas = [];
+    for (const { checkbox } of areaCheckboxes) checkbox.checked = true;
+    saveSettings();
+    rebuildGraph();
+  });
+  areaNoneBtn.addEventListener("click", () => {
+    hiddenAreas = areas.map((a) => a.id.replace(/^area:/, ""));
+    for (const { checkbox } of areaCheckboxes) checkbox.checked = false;
+    saveSettings();
+    rebuildGraph();
+  });
+
+  // State filter
+  const stateFilterLabel = document.createElement("div");
+  stateFilterLabel.style.cssText = "font-size:0.65rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;letter-spacing:0.05em;margin-top:0.4rem;margin-bottom:0.15rem";
+  stateFilterLabel.textContent = "State";
+  filtersSection.body.appendChild(stateFilterLabel);
+
+  const stateInputWrap = document.createElement("div");
+  stateInputWrap.style.cssText = "position:relative";
+  const stateInput = document.createElement("input");
+  stateInput.type = "text";
+  stateInput.className = "force-search";
+  stateInput.placeholder = "Filter by state (e.g. on, off)";
+  stateInput.value = stateFilter;
+  const stateClearBtn = document.createElement("button");
+  stateClearBtn.textContent = "\u00d7";
+  stateClearBtn.style.cssText = "position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:0.85rem;padding:0 4px;display:" + (stateFilter ? "block" : "none");
+  stateClearBtn.addEventListener("click", () => {
+    stateFilter = "";
+    stateInput.value = "";
+    stateClearBtn.style.display = "none";
+    saveSettings();
+    rebuildGraph();
+  });
+  let stateDebounce: ReturnType<typeof setTimeout> | null = null;
+  stateInput.addEventListener("input", () => {
+    stateFilter = stateInput.value.trim();
+    stateClearBtn.style.display = stateFilter ? "block" : "none";
+    if (stateDebounce) clearTimeout(stateDebounce);
+    stateDebounce = setTimeout(() => {
+      saveSettings();
+      rebuildGraph();
+    }, 150);
+  });
+  stateInputWrap.appendChild(stateInput);
+  stateInputWrap.appendChild(stateClearBtn);
+  filtersSection.body.appendChild(stateInputWrap);
+
+  viewTab.appendChild(filtersSection.el);
+
   // =====================
   // STYLE TAB
   // =====================
@@ -1036,7 +1244,12 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
     appearOnChange = defaults.appearOnChange;
     backgroundColor = defaults.backgroundColor;
     initialLayout = defaults.initialLayout;
+    hiddenDomains = [];
+    hiddenAreas = [];
+    stateFilter = "";
+    searchAsFilter = false;
     revealedNodes.clear();
+    collapsedDevices.clear();
     pendingReveals = [];
     if (revealTimer) { clearTimeout(revealTimer); revealTimer = null; }
     stateChangeCounts.clear();
@@ -1121,6 +1334,10 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
           appearOnChange = s.appearOnChange;
           backgroundColor = s.backgroundColor;
           initialLayout = s.initialLayout;
+          hiddenDomains = s.hiddenDomains;
+          hiddenAreas = s.hiddenAreas;
+          stateFilter = s.stateFilter;
+          searchAsFilter = s.searchAsFilter;
           removeSettings();
           settingsPanel = createSettings(container);
           rebuildWithStructure();
@@ -1484,6 +1701,57 @@ function buildGraph(root: TreeNode): void {
     });
     nodes = pruneEmptyBranches(nodes);
   }
+
+  if (hiddenDomains.length > 0) {
+    const hidden = new Set(hiddenDomains);
+    nodes = nodes.filter((n) => {
+      if (n.kind !== "entity" || !n.domain) return true;
+      return !hidden.has(n.domain);
+    });
+    nodes = pruneEmptyBranches(nodes);
+  }
+
+  if (hiddenAreas.length > 0) {
+    const hidden = new Set(hiddenAreas.map((a) => `area:${a}`));
+    nodes = nodes.filter((n) => {
+      if (n.kind === "area") return !hidden.has(n.id);
+      let cur = n.parent;
+      while (cur) {
+        if (cur.kind === "area" && hidden.has(cur.id)) return false;
+        cur = cur.parent;
+      }
+      return true;
+    });
+    nodes = pruneEmptyBranches(nodes);
+  }
+
+  if (stateFilter !== "") {
+    const filter = stateFilter.toLowerCase();
+    nodes = nodes.filter((n) => {
+      if (n.kind !== "entity" || !n.entityId) return true;
+      const state = currentStates.get(n.entityId);
+      return state !== undefined && state.state.toLowerCase() === filter;
+    });
+    nodes = pruneEmptyBranches(nodes);
+  }
+
+  if (searchAsFilter && searchQuery) {
+    nodes = nodes.filter((n) => {
+      if (n.kind !== "entity") return true;
+      const label = n.label.toLowerCase();
+      const id = (n.entityId ?? n.id).toLowerCase();
+      return label.includes(searchQuery) || id.includes(searchQuery);
+    });
+    nodes = pruneEmptyBranches(nodes);
+  }
+
+  if (collapsedDevices.size > 0) {
+    nodes = nodes.filter((n) => {
+      if (!n.parent) return true;
+      return !collapsedDevices.has(n.parent.id);
+    });
+  }
+
   const map = new Map<TreeNode, FNode>();
   const cx = width / 2 || 400;
   const cy = height / 2 || 300;
@@ -2655,7 +2923,14 @@ function getHaUrl(): string {
 function nodeActionId(node: TreeNode): string | null {
   if (node.entityId) return node.entityId;
   if (node.kind === "area") return node.id.replace(/^area:/, "");
+  if (node.kind === "device") return deviceIdFromNodeId(node.id);
   return null;
+}
+
+function deviceIdFromNodeId(nodeId: string): string {
+  // Node ID format: "device:{areaKey}:{deviceId}"
+  const parts = nodeId.split(":");
+  return parts.slice(2).join(":");
 }
 
 function performClickAction(node: TreeNode): void {
@@ -2738,7 +3013,37 @@ function onContextMenu(e: MouseEvent): void {
       addItem("View Logbook", () => openHaPage(node, "logbook"));
     } else if (node.kind === "area") {
       addItem("Open Area in HA", () => openHaPage(node, "history"));
+    } else if (node.kind === "device") {
+      addItem("Open Device in HA", () => {
+        window.open(`${haBase}/config/devices/device/${id}`, "_blank");
+      });
+      addItem("View Automations", () => {
+        window.open(`${haBase}/config/automation/dashboard?device_id=${id}`, "_blank");
+      });
+      addItem("View Logbook", () => {
+        const entityIds = node.children
+          .filter((c) => c.entityId)
+          .map((c) => c.entityId)
+          .join(",");
+        if (entityIds) {
+          window.open(`${haBase}/logbook?entity_id=${entityIds}`, "_blank");
+        } else {
+          window.open(`${haBase}/logbook`, "_blank");
+        }
+      });
     }
+  }
+
+  if (node.kind === "device" && node.children.length > 0) {
+    const isCollapsed = collapsedDevices.has(node.id);
+    addItem(isCollapsed ? "Expand" : "Collapse", () => {
+      if (isCollapsed) {
+        collapsedDevices.delete(node.id);
+      } else {
+        collapsedDevices.add(node.id);
+      }
+      rebuildGraph();
+    });
   }
 
   getRootElement().appendChild(menu);
