@@ -7,14 +7,7 @@ import type { Connection } from "home-assistant-js-websocket";
 import { initDebugConsole, debugLog } from "./debug";
 
 import { getRootElement } from "./rootElement";
-import { createSwitcher } from "./viz/switcher";
-import { hyperbolicViz } from "./viz/hyperbolic";
-import { treemapViz } from "./viz/treemap";
-import { sunburstViz } from "./viz/sunburst";
-import { dendrogramViz } from "./viz/dendrogram";
 import { createForceViz } from "./viz/force";
-import { globeViz } from "./viz/globe";
-import { matrixViz } from "./viz/matrix";
 
 const loginContainer = document.getElementById("login")!;
 const treeContainer = document.getElementById("tree")!;
@@ -67,16 +60,6 @@ async function handleLogin(creds: LoginCredentials, autoConnect = false) {
   }
 }
 
-function showSettingsForm(): void {
-  loginContainer.hidden = false;
-  treeContainer.hidden = true;
-
-  renderLoginForm(loginContainer, (creds) => {
-    treeContainer.innerHTML = "";
-    handleLogin(creds);
-  });
-}
-
 async function initTree(connection: Connection) {
   const registries = await fetchRegistries(connection);
   const root = buildTree(registries);
@@ -87,33 +70,17 @@ async function initTree(connection: Connection) {
 
   const states = new Map<string, HaState>();
 
-  const visualizations = [
-    createForceViz(registries, undefined, connection),
-    dendrogramViz,
-    globeViz,
-    hyperbolicViz,
-    matrixViz,
-    sunburstViz,
-    treemapViz,
-  ];
+  const forceViz = createForceViz(registries, undefined, connection, (creds) => {
+    treeContainer.innerHTML = "";
+    handleLogin(creds);
+  });
 
-  const switcher = createSwitcher(treeContainer, visualizations, root, states, "Force");
+  const vizContainer = document.createElement("div");
+  vizContainer.id = "viz-container";
+  treeContainer.appendChild(vizContainer);
+  forceViz.create(vizContainer, root, states);
 
-  const vizBar = getRootElement().querySelector("#viz-bar");
-  if (vizBar) {
-    const spacer = document.createElement("div");
-    spacer.className = "viz-bar-spacer";
-
-    const settingsBtn = document.createElement("button");
-    settingsBtn.id = "settings-btn";
-    settingsBtn.textContent = "\u2699";
-    settingsBtn.title = "Connection settings";
-    settingsBtn.addEventListener("click", showSettingsForm);
-
-    vizBar.append(spacer, settingsBtn);
-  }
-
-  subscribeToStates(connection, states, switcher);
+  subscribeToStates(connection, states, forceViz);
 
   debugLog("system", `Loaded ${nodes.length} nodes across ${registries.areas.length} areas`);
 
@@ -134,9 +101,8 @@ interface StateChangedEvent {
 function subscribeToStates(
   connection: Connection,
   states: Map<string, HaState>,
-  switcher: { updateStates(s: Map<string, HaState>): void; onEntityChanged(id: string, oldValue?: string): void }
+  forceViz: { updateStates(s: Map<string, HaState>): void; onEntityChanged(id: string, oldValue?: string): void }
 ) {
-  // subscribeMessage callback receives message.event (unwrapped by the library)
   connection.subscribeMessage<StateChangedEvent>(
     (event) => {
       const newState = event.data?.new_state;
@@ -147,8 +113,8 @@ function subscribeToStates(
         debugLog("state", newState.entity_id, `${oldVal} -> ${newVal}`);
 
         states.set(newState.entity_id, newState);
-        switcher.updateStates(states);
-        switcher.onEntityChanged(newState.entity_id, oldVal);
+        forceViz.updateStates(states);
+        forceViz.onEntityChanged(newState.entity_id, oldVal);
       }
     },
     { type: "subscribe_events", event_type: "state_changed" }
@@ -160,7 +126,7 @@ function subscribeToStates(
       for (const state of stateList) {
         states.set(state.entity_id, state);
       }
-      switcher.updateStates(states);
+      forceViz.updateStates(states);
       debugLog("system", `Received ${stateList.length} initial states`);
     });
 }

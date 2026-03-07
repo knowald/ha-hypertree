@@ -3,14 +3,7 @@ import { setRootElement, getRootElement } from "./rootElement";
 import { fetchRegistries } from "./ha/registry";
 import { buildTree, flattenTree } from "./tree/build";
 import { initDebugConsole, debugLog } from "./debug";
-import { createSwitcher } from "./viz/switcher";
 import { createForceViz } from "./viz/force";
-import { hyperbolicViz } from "./viz/hyperbolic";
-import { treemapViz } from "./viz/treemap";
-import { sunburstViz } from "./viz/sunburst";
-import { dendrogramViz } from "./viz/dendrogram";
-import { globeViz } from "./viz/globe";
-import { matrixViz } from "./viz/matrix";
 import type { HaState } from "./ha/types";
 import styles from "./style.css?inline";
 
@@ -34,7 +27,7 @@ interface StateChangedEvent {
 
 class HypertreePanel extends HTMLElement {
   private initialized = false;
-  private switcher: { updateStates(s: Map<string, HaState>): void; onEntityChanged(id: string, oldValue?: string): void } | null = null;
+  private forceViz: ReturnType<typeof createForceViz> | null = null;
   private states = new Map<string, HaState>();
   private container!: HTMLDivElement;
 
@@ -75,24 +68,12 @@ class HypertreePanel extends HTMLElement {
       const treeContainer = this.container.querySelector("#tree") as HTMLDivElement;
       treeContainer.innerHTML = "";
 
-      const visualizations = [
-        createForceViz(registries, haUrl, hass.connection),
-        dendrogramViz,
-        globeViz,
-        hyperbolicViz,
-        matrixViz,
-        sunburstViz,
-        treemapViz,
-      ];
+      this.forceViz = createForceViz(registries, haUrl, hass.connection);
 
-      this.switcher = createSwitcher(treeContainer, visualizations, root, this.states, "Force");
-
-      const vizBar = getRootElement().querySelector("#viz-bar");
-      if (vizBar) {
-        const spacer = document.createElement("div");
-        spacer.className = "viz-bar-spacer";
-        vizBar.appendChild(spacer);
-      }
+      const vizContainer = document.createElement("div");
+      vizContainer.id = "viz-container";
+      treeContainer.appendChild(vizContainer);
+      this.forceViz.create(vizContainer, root, this.states);
 
       this.subscribeToStates(hass.connection);
 
@@ -121,8 +102,8 @@ class HypertreePanel extends HTMLElement {
           debugLog("state", newState.entity_id, `${oldVal} -> ${newVal}`);
 
           this.states.set(newState.entity_id, newState);
-          this.switcher?.updateStates(this.states);
-          this.switcher?.onEntityChanged(newState.entity_id, oldVal);
+          this.forceViz?.updateStates(this.states);
+          this.forceViz?.onEntityChanged(newState.entity_id, oldVal);
         }
       },
       { type: "subscribe_events", event_type: "state_changed" }
@@ -134,7 +115,7 @@ class HypertreePanel extends HTMLElement {
         for (const state of stateList) {
           this.states.set(state.entity_id, state);
         }
-        this.switcher?.updateStates(this.states);
+        this.forceViz?.updateStates(this.states);
         debugLog("system", `Received ${stateList.length} initial states`);
       });
   }

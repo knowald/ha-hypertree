@@ -182,11 +182,10 @@ body {
   text-decoration: underline;
 }
 
-/* Tree container (offset below viz tab bar) */
 #tree {
   width: 100%;
-  height: calc(100% - 36px);
-  margin-top: 36px;
+  height: 100%;
+  position: relative;
 }
 
 /* SVG */
@@ -422,44 +421,6 @@ body {
 
 .toggle-label input {
   accent-color: var(--accent);
-}
-
-/* Visualization switcher bar */
-#viz-bar {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 36px;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 0 8px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  z-index: 300;
-  overflow-x: auto;
-}
-
-#viz-bar button {
-  background: transparent;
-  color: var(--text-muted);
-  border: none;
-  border-bottom: 2px solid transparent;
-  padding: 6px 12px;
-  font-size: 0.8rem;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: color 0.15s, border-color 0.15s;
-}
-
-#viz-bar button:hover {
-  color: var(--text);
-}
-
-#viz-bar button.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
 }
 
 #viz-container {
@@ -879,22 +840,4 @@ body {
   margin-left: 0.25rem;
 }
 
-/* Settings gear button in viz bar */
-.viz-bar-spacer {
-  flex: 1;
-}
-
-#settings-btn {
-  background: transparent;
-  color: var(--text-muted);
-  border: none;
-  padding: 4px 8px;
-  font-size: 0.9rem;
-  cursor: pointer;
-  line-height: 1;
-}
-
-#settings-btn:hover {
-  color: var(--text);
-}
 

@@ -1,5 +1,3 @@
-import type { Complex } from "../hyperbolic/complex";
-
 export type NodeKind = "root" | "area" | "domain" | "device" | "entity";
 
 export interface TreeNode {
@@ -13,7 +11,4 @@ export interface TreeNode {
   parent: TreeNode | null;
 
   leafCount: number;
-
-  z: Complex;
-  screenZ: Complex;
 }

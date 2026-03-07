@@ -95,7 +95,7 @@ export function showLoginError(container: HTMLElement, message: string): void {
   }
 }
 
-function saveCredentials(creds: LoginCredentials): void {
+export function saveCredentials(creds: LoginCredentials): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(creds));
   } catch {

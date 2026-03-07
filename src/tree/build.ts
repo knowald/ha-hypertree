@@ -1,6 +1,5 @@
 import type { Registries } from "../ha/types";
 import type { TreeNode } from "./types";
-import { ORIGIN } from "../hyperbolic/complex";
 
 const UNASSIGNED_AREA = "Unassigned";
 
@@ -48,8 +47,7 @@ export function buildTree(registries: Registries): TreeNode {
     children: [],
     parent: null,
     leafCount: 0,
-    z: [...ORIGIN],
-    screenZ: [...ORIGIN],
+
   };
 
   const sortedAreaKeys = [...grouped.keys()].sort((a, b) => {
@@ -71,8 +69,7 @@ export function buildTree(registries: Registries): TreeNode {
       children: [],
       parent: root,
       leafCount: 0,
-      z: [...ORIGIN],
-      screenZ: [...ORIGIN],
+
     };
 
     const domainMap = grouped.get(areaKey)!;
@@ -89,8 +86,7 @@ export function buildTree(registries: Registries): TreeNode {
         children: [],
         parent: areaNode,
         leafCount: 0,
-        z: [...ORIGIN],
-        screenZ: [...ORIGIN],
+
       };
 
       for (const entity of domainEntities) {
@@ -103,8 +99,7 @@ export function buildTree(registries: Registries): TreeNode {
           children: [],
           parent: domainNode,
           leafCount: 1,
-          z: [...ORIGIN],
-          screenZ: [...ORIGIN],
+
         };
         domainNode.children.push(entityNode);
       }
@@ -166,8 +161,7 @@ export function buildTreeByDevice(registries: Registries): TreeNode {
     children: [],
     parent: null,
     leafCount: 0,
-    z: [...ORIGIN],
-    screenZ: [...ORIGIN],
+
   };
 
   const sortedAreaKeys = [...grouped.keys()].sort((a, b) => {
@@ -189,8 +183,7 @@ export function buildTreeByDevice(registries: Registries): TreeNode {
       children: [],
       parent: root,
       leafCount: 0,
-      z: [...ORIGIN],
-      screenZ: [...ORIGIN],
+
     };
 
     const devMap = grouped.get(areaKey)!;
@@ -214,8 +207,7 @@ export function buildTreeByDevice(registries: Registries): TreeNode {
         children: [],
         parent: areaNode,
         leafCount: 0,
-        z: [...ORIGIN],
-        screenZ: [...ORIGIN],
+
       };
 
       for (const entity of deviceEntities) {
@@ -229,8 +221,7 @@ export function buildTreeByDevice(registries: Registries): TreeNode {
           children: [],
           parent: deviceNode,
           leafCount: 1,
-          z: [...ORIGIN],
-          screenZ: [...ORIGIN],
+
         };
         deviceNode.children.push(entityNode);
       }

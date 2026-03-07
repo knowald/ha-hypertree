@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.0 - 2026-03-07
+
+### Changed
+
+- Remove all visualization modes except Force (dendrogram, globe, hyperbolic, matrix, sunburst, treemap)
+- Remove visualization switcher tab bar
+- Move connection settings (URL, token) into the force settings panel
+- Hide connection settings in HACS panel mode where HA provides the connection
+
+### Removed
+
+- Remove hyperbolic math, Poincare disk, Mobius transform modules
+- Remove interaction modules (focus, pan)
+- Remove bloom, ripple, and SVG renderer
+- Remove hyperbolic wedge layout
+- Remove `z` and `screenZ` fields from tree nodes
+
 ## 0.8.1 - 2026-03-04
 
 ### Added

@@ -1,12 +1,11 @@
 import type { Connection } from "home-assistant-js-websocket";
-import type { Visualization } from "./types";
 import type { TreeNode } from "../tree/types";
 import type { HaState, Registries } from "../ha/types";
 import { color, showTip, hideTip, flatten } from "./shared";
 import { randomizeColors, resetColors, getDomainColors, setDomainColors, setDomainColor, domainList } from "../render/colors";
 import { createTransform, applyWheel, screenToWorld, type ZoomTransform } from "./zoom";
 import { buildTree, buildTreeByDevice } from "../tree/build";
-import { loadCredentials } from "../login";
+import { loadCredentials, saveCredentials } from "../login";
 import { getRootElement } from "../rootElement";
 import { updateFps, debugLog } from "../debug";
 import { fetchAutomationEdges, type AutomationEdge, type AutomationRelation } from "../ha/automation";
@@ -45,6 +44,7 @@ let frame = 0;
 let currentStates: Map<string, HaState> = new Map();
 let currentRegistries: Registries | null = null;
 let panelHaUrl = "";
+let reconnectCallback: ((creds: { url: string; token: string }) => void) | null = null;
 let fnodes: FNode[] = [];
 let fedges: FEdge[] = [];
 let clusters: Cluster[] = [];
@@ -320,13 +320,14 @@ function getStarSprite(nodeCol: string, intensity: number): { canvas: OffscreenC
   return entry;
 }
 
-export function createForceViz(registries: Registries, haUrl?: string, connection?: Connection): Visualization {
+export function createForceViz(registries: Registries, haUrl?: string, connection?: Connection, onReconnect?: (creds: { url: string; token: string }) => void) {
   panelHaUrl = haUrl ?? "";
   haConnection = connection ?? null;
+  reconnectCallback = onReconnect ?? null;
   return {
     name: "Force",
 
-    create(container, _root, states) {
+    create(container: HTMLElement, _root: TreeNode, states: Map<string, HaState>) {
       currentStates = states;
       currentRegistries = registries;
       alpha = 1;
@@ -404,7 +405,7 @@ export function createForceViz(registries: Registries, haUrl?: string, connectio
       panning = false;
     },
 
-    updateStates(states) {
+    updateStates(states: Map<string, HaState>) {
       currentStates = states;
     },
 
@@ -1089,6 +1090,40 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   buttons.appendChild(importBtn);
 
   panel.appendChild(buttons);
+
+  if (reconnectCallback) {
+    const connectionSection = makeSection("Connection", false);
+
+    const saved = loadCredentials();
+
+    const urlInput = document.createElement("input");
+    urlInput.type = "url";
+    urlInput.className = "force-search";
+    urlInput.placeholder = "https://homeassistant.local:8123";
+    urlInput.value = saved?.url ?? "";
+    connectionSection.body.appendChild(urlInput);
+
+    const tokenInput = document.createElement("input");
+    tokenInput.type = "password";
+    tokenInput.className = "force-search";
+    tokenInput.placeholder = "Long-lived access token";
+    tokenInput.value = saved?.token ?? "";
+    connectionSection.body.appendChild(tokenInput);
+
+    const reconnectBtn = document.createElement("button");
+    reconnectBtn.className = "force-reset-btn";
+    reconnectBtn.textContent = "Reconnect";
+    reconnectBtn.addEventListener("click", () => {
+      const url = urlInput.value.trim();
+      const token = tokenInput.value.trim();
+      if (!url || !token) return;
+      saveCredentials({ url, token });
+      reconnectCallback!({ url, token });
+    });
+    connectionSection.body.appendChild(reconnectBtn);
+
+    panel.appendChild(connectionSection.el);
+  }
 
   return wrapper;
 }
