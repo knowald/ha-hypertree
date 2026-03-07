@@ -92,29 +92,31 @@ interface ForceSettings {
   automationOnly: boolean;
   appearOnChange: boolean;
   backgroundColor: string;
+  initialLayout: InitialLayout;
 }
 
 type StarEffect = "supernova" | "shooting-star" | "flare" | "pulse-wave" | "color-shift";
-type UnavailableMode = "normal" | "pulse" | "hidden" | "only";
+type UnavailableMode = "normal" | "pulse" | "ring" | "hidden" | "only";
+type InitialLayout = "tree" | "scatter";
 const defaults: ForceSettings = {
   showHulls: false,
   showLabels: true,
   showEntities: true,
   showAutomationEdges: false,
-  unavailableMode: "pulse",
+  unavailableMode: "ring",
   changedOnly: true,
   constellation: false,
   groupBy: "area",
   structureMode: "domain",
-  starSize: 0.8,
-  glowIntensity: 1.2,
+  starSize: 1.7,
+  glowIntensity: 0.8,
   parentGlowIntensity: 0.2,
-  effectScale: 2,
+  effectScale: 1.2,
   twinkleSpeed: 0.1,
-  twinkleSize: 0,
-  lineGlow: 0.3,
-  glowBrightness: 2,
-  glowSize: 8,
+  twinkleSize: 0.1,
+  lineGlow: 0.5,
+  glowBrightness: 1.6,
+  glowSize: 11,
   starEffect: "supernova",
   labelSize: 16,
   entityDotSize: 16,
@@ -127,6 +129,7 @@ const defaults: ForceSettings = {
   automationOnly: false,
   backgroundColor: "#000000",
   appearOnChange: false,
+  initialLayout: "tree",
 };
 
 function loadSettings(): ForceSettings {
@@ -152,7 +155,7 @@ function saveSettings(): void {
     starEffect, parentGlowIntensity, effectScale,
     labelSize, entityDotSize, parentLabelZoom, entityLabelZoom,
     repulsion, springLen, springK, damping,
-    automationOnly, appearOnChange, backgroundColor,
+    automationOnly, appearOnChange, backgroundColor, initialLayout,
   };
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* ignore */ }
 }
@@ -201,6 +204,7 @@ let alpha = 1;
 let automationOnly = saved.automationOnly;
 let appearOnChange = saved.appearOnChange;
 let backgroundColor = saved.backgroundColor;
+let initialLayout: InitialLayout = saved.initialLayout;
 let revealedNodes: Set<string> = new Set();
 let stateChangeCounts: Map<string, number> = new Map();
 let allTreeNodesById: Map<string, TreeNode> = new Map();
@@ -511,7 +515,7 @@ function insertRevealedNode(nodeId: string): void {
 
   const r = treeNode.kind === "area" ? 8
     : (treeNode.kind === "domain" || treeNode.kind === "device") ? 6
-    : entityDotSize;
+      : entityDotSize;
 
   let hash = 0;
   for (let i = 0; i < treeNode.id.length; i++) hash = ((hash << 5) - hash + treeNode.id.charCodeAt(i)) | 0;
@@ -667,6 +671,12 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     saveSettings();
   }));
 
+  modeSection.body.appendChild(makeSelect("Layout", ["tree", "scatter"], initialLayout, (v) => {
+    initialLayout = v as InitialLayout;
+    rebuildGraph();
+    saveSettings();
+  }, "Initial node positions: tree (structured) or scatter (random)"));
+
   // Entities + sub-options
   entitiesToggle = makeToggle("Entities", showEntities, (v) => {
     showEntities = v;
@@ -694,7 +704,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   entitiesSubOptions.className = "force-sub-options";
   entitiesSubOptions.hidden = !showEntities;
 
-  unavailableSelect = makeSelect("Unavailable", ["normal", "pulse", "hidden", "only"], unavailableMode, (v) => {
+  unavailableSelect = makeSelect("Unavailable", ["normal", "pulse", "ring", "hidden", "only"], unavailableMode, (v) => {
     const prev = unavailableMode;
     unavailableMode = v as UnavailableMode;
     if (v === "hidden" || prev === "hidden" || v === "only" || prev === "only") rebuildGraph();
@@ -769,7 +779,6 @@ function createSettings(container: HTMLElement): HTMLDivElement {
   constellationSubOptions.appendChild(makeSlider("Effect scale", 0.5, 5, effectScale, 0.1, (v) => { effectScale = v; saveSettings(); }, "Size of state-change effects"));
   constellationSubOptions.appendChild(makeSlider("Twinkle speed", 0, 5, twinkleSpeed, 0.1, (v) => { twinkleSpeed = v; saveSettings(); }));
   constellationSubOptions.appendChild(makeSlider("Twinkle size", 0, 1, twinkleSize, 0.05, (v) => { twinkleSize = v; saveSettings(); }, "Halo radius pulsing with twinkle"));
-  constellationSubOptions.appendChild(makeSlider("Edge glow", 0, 3, lineGlow, 0.1, (v) => { lineGlow = v; saveSettings(); }, "Glow on connection lines"));
   constellationSubOptions.appendChild(makeSelect("Effect",
     ["supernova", "shooting-star", "flare", "pulse-wave", "color-shift"],
     starEffect, (v) => { starEffect = v as StarEffect; saveSettings(); }, "Animation on entity state change"));
@@ -798,6 +807,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     }
     saveSettings();
   }));
+  displaySection.body.appendChild(makeSlider("Connection brightness", 0, 3, lineGlow, 0.1, (v) => { lineGlow = v; saveSettings(); }, "Opacity of parent-child connection lines"));
   panel.appendChild(displaySection.el);
 
   // -- Automations section --
@@ -976,6 +986,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
     automationOnly = defaults.automationOnly;
     appearOnChange = defaults.appearOnChange;
     backgroundColor = defaults.backgroundColor;
+    initialLayout = defaults.initialLayout;
     revealedNodes.clear();
     pendingReveals = [];
     if (revealTimer) { clearTimeout(revealTimer); revealTimer = null; }
@@ -1061,6 +1072,7 @@ function createSettings(container: HTMLElement): HTMLDivElement {
           automationOnly = s.automationOnly;
           appearOnChange = s.appearOnChange;
           backgroundColor = s.backgroundColor;
+          initialLayout = s.initialLayout;
           // Rebuild UI and graph
           const container = wrapper.parentElement!;
           wrapper.remove();
@@ -1392,31 +1404,29 @@ function buildGraph(root: TreeNode): void {
     nodes = pruneEmptyBranches(nodes);
   }
   const map = new Map<TreeNode, FNode>();
-  const nodeSet = new Set(nodes);
-
-  // Radial tree layout for initial positions
-  const positions = new Map<TreeNode, { x: number; y: number }>();
   const cx = width / 2 || 400;
   const cy = height / 2 || 300;
 
-  function layoutRadial(node: TreeNode, x: number, y: number, angleStart: number, angleSpan: number, depth: number): void {
-    positions.set(node, { x, y });
-    const children = node.children.filter((c) => nodeSet.has(c));
-    if (children.length === 0) return;
-    const radius = springLen * (depth === 0 ? 1.5 : 1);
-    let offset = angleStart;
-    const totalLeaves = children.reduce((s, c) => s + Math.max(1, c.leafCount), 0);
-    for (const child of children) {
-      const share = (Math.max(1, child.leafCount) / totalLeaves) * angleSpan;
-      const angle = offset + share / 2;
-      layoutRadial(child, x + Math.cos(angle) * radius, y + Math.sin(angle) * radius, offset, share, depth + 1);
-      offset += share;
+  // Radial tree layout for initial positions (when layout is "tree")
+  const positions = new Map<TreeNode, { x: number; y: number }>();
+  if (initialLayout === "tree") {
+    const nodeSet = new Set(nodes);
+    function layoutRadial(node: TreeNode, x: number, y: number, angleStart: number, angleSpan: number, depth: number): void {
+      positions.set(node, { x, y });
+      const children = node.children.filter((c) => nodeSet.has(c));
+      if (children.length === 0) return;
+      const radius = springLen * (depth === 0 ? 1.5 : 1);
+      let offset = angleStart;
+      const totalLeaves = children.reduce((s, c) => s + Math.max(1, c.leafCount), 0);
+      for (const child of children) {
+        const share = (Math.max(1, child.leafCount) / totalLeaves) * angleSpan;
+        const angle = offset + share / 2;
+        layoutRadial(child, x + Math.cos(angle) * radius, y + Math.sin(angle) * radius, offset, share, depth + 1);
+        offset += share;
+      }
     }
-  }
-
-  const rootNode = nodes.find((n) => n.kind === "root");
-  if (rootNode) {
-    layoutRadial(rootNode, cx, cy, 0, Math.PI * 2, 0);
+    const rootNode = nodes.find((n) => n.kind === "root");
+    if (rootNode) layoutRadial(rootNode, cx, cy, 0, Math.PI * 2, 0);
   }
 
   fnodes = nodes.map((n) => {
@@ -1427,8 +1437,8 @@ function buildGraph(root: TreeNode): void {
     const pos = positions.get(n);
     const fn: FNode = {
       tree: n,
-      x: pos ? pos.x : cx + (Math.random() - 0.5) * 100,
-      y: pos ? pos.y : cy + (Math.random() - 0.5) * 100,
+      x: pos ? pos.x : cx + (Math.random() - 0.5) * 600,
+      y: pos ? pos.y : cy + (Math.random() - 0.5) * 400,
       vx: 0, vy: 0,
       fx: null, fy: null,
       r,
@@ -1463,10 +1473,11 @@ function buildGraph(root: TreeNode): void {
   glowTimestamps = new Map();
   rebuildClusters();
 
-  // Warm up: run simulation ticks before first render so the layout is mostly settled
-  for (let i = 0; i < 150; i++) {
-    simulate();
-    alpha *= alphaDecay;
+  if (initialLayout === "tree") {
+    for (let i = 0; i < 150; i++) {
+      simulate();
+      alpha *= alphaDecay;
+    }
   }
 }
 
@@ -2023,7 +2034,7 @@ function drawConstellation(ctx: CanvasRenderingContext2D, now: number): void {
   for (const fn of fnodes) {
     if (fn.tree.kind !== "entity") continue;
 
-    const unavail = unavailableMode === "pulse" && isUnavailable(fn);
+    const unavail = isUnavailable(fn) && (unavailableMode === "pulse" || unavailableMode === "ring");
     const twinkle = twinkleSpeed === 0 ? 1 : 0.5 + 0.5 * Math.sin(now * 0.003 * twinkleSpeed + fn.phase);
     const pulse = twinkle * twinkle;
     const baseAlpha = unavail ? 0.15 : 0.5;
@@ -2411,24 +2422,42 @@ function draw(): void {
     }
   }
 
-  ctx.lineWidth = 0.5 / transform.k;
-  ctx.strokeStyle = "#444";
+  ctx.globalAlpha = Math.min(1, lineGlow);
+  ctx.lineWidth = (0.5 + lineGlow) / transform.k;
+  ctx.strokeStyle = lineGlow > 1 ? "#666" : "#444";
   for (const e of fedges) {
     ctx.beginPath();
     ctx.moveTo(e.source.x, e.source.y);
     ctx.lineTo(e.target.x, e.target.y);
     ctx.stroke();
   }
+  ctx.globalAlpha = 1;
 
   drawAutomationEdges(ctx);
 
   for (const n of fnodes) {
-    const unavail = unavailableMode === "pulse" && isUnavailable(n);
-    ctx.globalAlpha = unavail ? 0.3 : 1;
+    const unavail = isUnavailable(n);
+    const dimmed = unavail && unavailableMode === "pulse";
+    const ringed = unavail && unavailableMode === "ring";
+    ctx.globalAlpha = dimmed ? 0.3 : 1;
     ctx.beginPath();
     ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
-    ctx.fillStyle = unavail ? "#666" : color(n.tree);
-    ctx.fill();
+    if (ringed) {
+      ctx.fillStyle = backgroundColor;
+      ctx.fill();
+      ctx.globalAlpha = 0.12;
+      ctx.fillStyle = color(n.tree);
+      ctx.fill();
+      ctx.globalAlpha = 0.5;
+      ctx.strokeStyle = "#888";
+      ctx.lineWidth = 1 / transform.k;
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = dimmed ? "#666" : color(n.tree);
+      ctx.fill();
+    }
   }
   ctx.globalAlpha = 1;
 
