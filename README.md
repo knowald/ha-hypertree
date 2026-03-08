@@ -4,6 +4,8 @@
 
 Interactive tree visualizations for your Home Assistant entity hierarchy.
 
+![HA Hypertree preview](public/preview.png)
+
 Preview available at [hypertree.eightypercent.dev](https://hypertree.eightypercent.dev).
 
 ---
