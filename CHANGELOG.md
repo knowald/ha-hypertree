@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.10.0 - 2026-03-08
+
+### Added
+
+- Add filter panel with domain, area, and state filters
+- Add search-as-filter toggle to hide non-matching nodes instead of highlighting
+- Add filter button with funnel icon to canvas toolbar, opening a dedicated dropdown
+- Replace settings gear icon with sliders/tuning SVG
+
+### Changed
+
+- Move filters into a separate panel from the settings dropdown
+- Sort domain and area filter lists alphabetically
+
 ## 0.9.0 - 2026-03-07
 
 ### Changed

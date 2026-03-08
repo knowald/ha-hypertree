@@ -224,7 +224,7 @@ let allTreeNodesById: Map<string, TreeNode> = new Map();
 let allEntityTreeNodes: Map<string, TreeNode> = new Map();
 let pendingReveals: string[] = [];
 let revealTimer: ReturnType<typeof setTimeout> | null = null;
-let collapsedDevices: Set<string> = new Set();
+let collapsedNodes: Set<string> = new Set();
 
 let haConnection: Connection | null = null;
 let automationEdges: AutomationEdge[] = [];
@@ -406,7 +406,7 @@ export function createForceViz(registries: Registries, haUrl?: string, connectio
       automationLoading = false;
       onAutomationLoaded = null;
       revealedNodes.clear();
-      collapsedDevices.clear();
+      collapsedNodes.clear();
       stateChangeCounts.clear();
       allTreeNodesById = new Map();
       allEntityTreeNodes = new Map();
@@ -516,7 +516,7 @@ function processNextReveal(): void {
   }
 }
 
-function insertRevealedNode(nodeId: string): void {
+function insertRevealedNode(nodeId: string, skipGlow = false): void {
   const treeNode = allTreeNodesById.get(nodeId);
   if (!treeNode) return;
 
@@ -565,7 +565,55 @@ function insertRevealedNode(nodeId: string): void {
   childFNodes.set(fn, []);
   if (treeNode.entityId) entityNodeMap.set(treeNode.entityId, fn);
 
-  glowTimestamps.set(fn, performance.now());
+  if (!skipGlow) glowTimestamps.set(fn, performance.now());
+  alpha = Math.max(alpha, 0.3);
+  ensureLoop();
+}
+
+function isCollapsible(node: TreeNode): boolean {
+  return (node.kind === "device" || node.kind === "area") && node.children.length > 0;
+}
+
+function toggleCollapse(fnode: FNode): void {
+  const node = fnode.tree;
+  if (!isCollapsible(node)) return;
+
+  const isCollapsed = collapsedNodes.has(node.id);
+  if (isCollapsed) {
+    collapsedNodes.delete(node.id);
+    // Re-insert direct children (recursively inserts their children too,
+    // unless those are themselves collapsed)
+    const queue = [...node.children];
+    while (queue.length > 0) {
+      const child = queue.shift()!;
+      insertRevealedNode(child.id, true);
+      if (!collapsedNodes.has(child.id)) {
+        queue.push(...child.children);
+      }
+    }
+  } else {
+    collapsedNodes.add(node.id);
+    const toRemove = new Set<FNode>();
+    function collectDescendants(fn: FNode): void {
+      const children = childFNodes.get(fn);
+      if (!children) return;
+      for (const child of children) {
+        toRemove.add(child);
+        collectDescendants(child);
+      }
+    }
+    collectDescendants(fnode);
+
+    for (const fn of toRemove) {
+      if (fn.tree.entityId) entityNodeMap.delete(fn.tree.entityId);
+      childFNodes.delete(fn);
+      parentFNode.delete(fn);
+    }
+    fnodes = fnodes.filter((fn) => !toRemove.has(fn));
+    fedges = fedges.filter((e) => !toRemove.has(e.source) && !toRemove.has(e.target));
+    childFNodes.set(fnode, []);
+  }
+
   alpha = Math.max(alpha, 0.3);
   ensureLoop();
 }
@@ -643,18 +691,11 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   });
   toolbar.appendChild(searchInput);
 
-  const searchFilterBtn = document.createElement("button");
-  searchFilterBtn.className = "canvas-toolbar-btn search-filter-toggle";
-  searchFilterBtn.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M1 2.5A.5.5 0 0 1 1.5 2h13a.5.5 0 0 1 .4.8L10 9v4.5a.5.5 0 0 1-.7.4L7 12.5V9L1.1 2.8A.5.5 0 0 1 1 2.5z"/></svg>';
-  searchFilterBtn.title = "Filter mode: hide non-matching nodes";
-  searchFilterBtn.classList.toggle("active", searchAsFilter);
-  searchFilterBtn.addEventListener("click", () => {
-    searchAsFilter = !searchAsFilter;
-    searchFilterBtn.classList.toggle("active", searchAsFilter);
-    saveSettings();
-    if (searchQuery) rebuildGraph();
-  });
-  toolbar.appendChild(searchFilterBtn);
+  const filterBtn = document.createElement("button");
+  filterBtn.className = "canvas-toolbar-btn";
+  filterBtn.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M1 2.5A.5.5 0 0 1 1.5 2h13a.5.5 0 0 1 .4.8L10 9v4.5a.5.5 0 0 1-.7.4L7 12.5V9L1.1 2.8A.5.5 0 0 1 1 2.5z"/></svg>';
+  filterBtn.title = "Filters";
+  toolbar.appendChild(filterBtn);
 
   const resetPosBtn = document.createElement("button");
   resetPosBtn.className = "canvas-toolbar-btn";
@@ -669,15 +710,37 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   gearBtn.title = "Settings";
   toolbar.appendChild(gearBtn);
 
-  // -- Dropdown panel (anchored below toolbar) --
+  // -- Dropdown panels --
   const panel = document.createElement("div");
   panel.className = "settings-panel";
   toolbar.appendChild(panel);
 
+  const filterPanel = document.createElement("div");
+  filterPanel.className = "settings-panel filter-panel-dropdown";
+  toolbar.appendChild(filterPanel);
+
+  function closeFilterPanel(): void {
+    filterPanel.classList.remove("open");
+    filterBtn.classList.remove("active");
+  }
+
+  function closeSettingsPanel(): void {
+    panel.classList.remove("open");
+    gearBtn.classList.remove("active");
+  }
+
   gearBtn.addEventListener("click", () => {
     const opening = !panel.classList.contains("open");
+    closeFilterPanel();
     panel.classList.toggle("open", opening);
     gearBtn.classList.toggle("active", opening);
+  });
+
+  filterBtn.addEventListener("click", () => {
+    const opening = !filterPanel.classList.contains("open");
+    closeSettingsPanel();
+    filterPanel.classList.toggle("open", opening);
+    filterBtn.classList.toggle("active", opening);
   });
 
   // -- Tab bar --
@@ -906,14 +969,20 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   entitiesSubOptions.appendChild(appearOnChangeToggle);
   viewTab.appendChild(entitiesSubOptions);
 
-  // -- Filters section --
-  const filtersSection = makeSection("Filters", false);
+  // -- Filter panel contents --
+  const filterBody = document.createElement("div");
+  filterBody.className = "settings-body";
+  filterPanel.appendChild(filterBody);
+
+  // Search as filter toggle
+  filterBody.appendChild(makeToggle("Search hides non-matching", searchAsFilter, (v) => {
+    searchAsFilter = v;
+    saveSettings();
+    if (searchQuery) rebuildGraph();
+  }, "When enabled, the search bar hides nodes instead of highlighting them"));
 
   // Domain filter
-  const domainFilterLabel = document.createElement("div");
-  domainFilterLabel.style.cssText = "font-size:0.65rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.15rem";
-  domainFilterLabel.textContent = "Domains";
-  filtersSection.body.appendChild(domainFilterLabel);
+  const domainSection = makeSection("Domains");
 
   const domainActions = document.createElement("div");
   domainActions.className = "filter-actions";
@@ -927,13 +996,13 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   domainNoneBtn.style.cssText = "flex:1;padding:0.2rem 0";
   domainActions.appendChild(domainAllBtn);
   domainActions.appendChild(domainNoneBtn);
-  filtersSection.body.appendChild(domainActions);
+  domainSection.body.appendChild(domainActions);
 
   const domainGrid = document.createElement("div");
   domainGrid.className = "filter-grid";
-  filtersSection.body.appendChild(domainGrid);
+  domainSection.body.appendChild(domainGrid);
 
-  const domains = domainList();
+  const domains = domainList().sort();
   const domainCheckboxes: { domain: string; checkbox: HTMLInputElement }[] = [];
 
   for (const d of domains) {
@@ -972,12 +1041,10 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
     saveSettings();
     rebuildGraph();
   });
+  filterBody.appendChild(domainSection.el);
 
   // Area filter
-  const areaFilterLabel = document.createElement("div");
-  areaFilterLabel.style.cssText = "font-size:0.65rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;letter-spacing:0.05em;margin-top:0.4rem;margin-bottom:0.15rem";
-  areaFilterLabel.textContent = "Areas";
-  filtersSection.body.appendChild(areaFilterLabel);
+  const areaSection = makeSection("Areas");
 
   const areaActions = document.createElement("div");
   areaActions.className = "filter-actions";
@@ -991,16 +1058,16 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   areaNoneBtn.style.cssText = "flex:1;padding:0.2rem 0";
   areaActions.appendChild(areaAllBtn);
   areaActions.appendChild(areaNoneBtn);
-  filtersSection.body.appendChild(areaActions);
+  areaSection.body.appendChild(areaActions);
 
   const areaGrid = document.createElement("div");
   areaGrid.className = "filter-grid";
-  filtersSection.body.appendChild(areaGrid);
+  areaSection.body.appendChild(areaGrid);
 
-  const root = structureMode === "device"
+  const filterRoot = structureMode === "device"
     ? buildTreeByDevice(currentRegistries!)
     : buildTree(currentRegistries!);
-  const areas = root.children.filter((c) => c.kind === "area");
+  const areas = filterRoot.children.filter((c) => c.kind === "area").sort((a, b) => a.label.localeCompare(b.label));
   const areaCheckboxes: { areaId: string; checkbox: HTMLInputElement }[] = [];
 
   for (const area of areas) {
@@ -1040,12 +1107,10 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
     saveSettings();
     rebuildGraph();
   });
+  filterBody.appendChild(areaSection.el);
 
   // State filter
-  const stateFilterLabel = document.createElement("div");
-  stateFilterLabel.style.cssText = "font-size:0.65rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;letter-spacing:0.05em;margin-top:0.4rem;margin-bottom:0.15rem";
-  stateFilterLabel.textContent = "State";
-  filtersSection.body.appendChild(stateFilterLabel);
+  const stateSection = makeSection("State");
 
   const stateInputWrap = document.createElement("div");
   stateInputWrap.style.cssText = "position:relative";
@@ -1076,9 +1141,8 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   });
   stateInputWrap.appendChild(stateInput);
   stateInputWrap.appendChild(stateClearBtn);
-  filtersSection.body.appendChild(stateInputWrap);
-
-  viewTab.appendChild(filtersSection.el);
+  stateSection.body.appendChild(stateInputWrap);
+  filterBody.appendChild(stateSection.el);
 
   // =====================
   // STYLE TAB
@@ -1249,7 +1313,7 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
     stateFilter = "";
     searchAsFilter = false;
     revealedNodes.clear();
-    collapsedDevices.clear();
+    collapsedNodes.clear();
     pendingReveals = [];
     if (revealTimer) { clearTimeout(revealTimer); revealTimer = null; }
     stateChangeCounts.clear();
@@ -1745,10 +1809,14 @@ function buildGraph(root: TreeNode): void {
     nodes = pruneEmptyBranches(nodes);
   }
 
-  if (collapsedDevices.size > 0) {
+  if (collapsedNodes.size > 0) {
     nodes = nodes.filter((n) => {
-      if (!n.parent) return true;
-      return !collapsedDevices.has(n.parent.id);
+      let cur = n.parent;
+      while (cur) {
+        if (collapsedNodes.has(cur.id)) return false;
+        cur = cur.parent;
+      }
+      return true;
     });
   }
 
@@ -2810,6 +2878,45 @@ function draw(): void {
   }
   ctx.globalAlpha = 1;
 
+  // Draw collapsed indicator
+  if (collapsedNodes.size > 0) {
+    const ss = 1 / transform.k;
+    for (const n of fnodes) {
+      if (!collapsedNodes.has(n.tree.id)) continue;
+
+      // Dashed ring around the node
+      ctx.strokeStyle = "#aaa";
+      ctx.lineWidth = 1.5 * ss;
+      ctx.setLineDash([3 * ss, 3 * ss]);
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, n.r + 4 * ss, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Child count badge
+      const count = n.tree.leafCount;
+      const label = String(count);
+      const fontSize = Math.max(7, 9 * ss);
+      ctx.font = `600 ${fontSize}px sans-serif`;
+      const tw = ctx.measureText(label).width;
+      const badgeR = Math.max(tw / 2 + 2 * ss, 5 * ss);
+      const bx = n.x + n.r + 4 * ss;
+      const by = n.y - n.r - 2 * ss;
+
+      ctx.beginPath();
+      ctx.arc(bx, by, badgeR, 0, Math.PI * 2);
+      ctx.fillStyle = "#555";
+      ctx.fill();
+
+      ctx.fillStyle = "#fff";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(label, bx, by);
+    }
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+  }
+
   drawUnavailablePulses(ctx, performance.now());
 
   if (hoveredNode) {
@@ -2893,6 +3000,10 @@ function onMouseMove(e: MouseEvent): void {
         extra += getAutomationTooltipHtml(n.tree.entityId);
       }
     }
+    if (isCollapsible(n.tree)) {
+      const collapsed = collapsedNodes.has(n.tree.id);
+      extra += `<br><span style="color:#9e9e9e;font-size:0.7rem">${n.tree.leafCount} entities${collapsed ? " (collapsed)" : ""} · Shift+click to ${collapsed ? "expand" : "collapse"}</span>`;
+    }
     showTip(e.clientX, e.clientY, n.tree, currentStates, extra || undefined);
     if (canvas) canvas.style.cursor = "pointer";
   } else {
@@ -2902,10 +3013,14 @@ function onMouseMove(e: MouseEvent): void {
   if (changed) ensureLoop();
 }
 
-function onMouseUp(): void {
+function onMouseUp(e: MouseEvent): void {
   if (dragNode) {
     if (!didDrag) {
-      performClickAction(dragNode.tree);
+      if (e.shiftKey && isCollapsible(dragNode.tree)) {
+        toggleCollapse(dragNode);
+      } else {
+        performClickAction(dragNode.tree);
+      }
     }
     dragNode.fx = null;
     dragNode.fy = null;
@@ -3034,15 +3149,10 @@ function onContextMenu(e: MouseEvent): void {
     }
   }
 
-  if (node.kind === "device" && node.children.length > 0) {
-    const isCollapsed = collapsedDevices.has(node.id);
-    addItem(isCollapsed ? "Expand" : "Collapse", () => {
-      if (isCollapsed) {
-        collapsedDevices.delete(node.id);
-      } else {
-        collapsedDevices.add(node.id);
-      }
-      rebuildGraph();
+  if (isCollapsible(node)) {
+    const collapsed = collapsedNodes.has(node.id);
+    addItem(collapsed ? "Expand" : "Collapse", () => {
+      toggleCollapse(n);
     });
   }
 

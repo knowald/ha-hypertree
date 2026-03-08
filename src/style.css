@@ -788,16 +788,6 @@ body {
   margin-bottom: 0.25rem;
 }
 
-.search-filter-toggle.active {
-  background: var(--accent);
-  color: #fff;
-  border-color: var(--accent);
-}
-
-.search-filter-toggle.active:hover {
-  background: var(--accent);
-  opacity: 0.85;
-}
 
 .force-toast {
   position: absolute;
