@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.12.0 - 2026-05-02
+
+### Added
+
+- Add service-call actions to the node action menu for actionable entity domains (light, switch, fan, cover, lock, automation, script, scene, media_player, vacuum, button, climate, valve, and more), with toast feedback on success or failure and a confirm prompt on destructive actions like unlock
+- Add Structure labels toggle to show or hide labels on domain or device grouping nodes; labels render in world space with a slightly smaller font than area labels
+- Add Entity icons toggle that resolves Material Design Icons via the Home Assistant frontend (`<ha-icon>`) in panel mode and falls back to the Iconify API in standalone mode; uses `state.attributes.icon` when set, otherwise a per-domain default
+- Add Twinkle floor slider to set the minimum brightness during twinkle dip (previously hardcoded at 0.15, now defaults to 0.5)
+- Add Halo spread slider that shapes the halo with a Gaussian falloff and a chromatic overexposure shift toward white at the bright center
+
+### Changed
+
+- Left-click on a node now opens the action menu (previously copied the entity ID); ID copy is available as a menu item
+- Replace the Structure, Layout, and Grouping selects with segmented toggles that show both options side by side and highlight the active one
+- Area and root labels now scale with zoom (world space) like other elements, instead of staying at a fixed screen size
+- Split the constellation star sprite into separate halo and core layers; the white core stays bright regardless of the Brightness slider, so the core no longer dims with the halo
+- Switch halo composite from `lighter` to `screen` so overlapping halos brighten smoothly without hard clipping at the overlap edges
+- Update default constellation values for a broader, softer look (`starSize` 1.4, `glowIntensity` 0.6, `glowSize` 14, `glowBrightness` 0.7, `lineGlow` 0.7, `haloFalloff` 1, `twinkleSpeed` 0, `twinkleSize` 0.2) and enable constellation by default
+
+### Removed
+
+- Remove the Parent label zoom slider; structure labels are now controlled by the Structure labels toggle
+
+### Fixed
+
+- Remove canvas mouse listeners on viz destroy to prevent leaks when the panel is recreated
+- Clear the context menu dismiss listener and pending `setTimeout` on dismissal to prevent a per-right-click leak
+- Load automation edges on page load when "Automation entities only" was saved; the previous code read from the filtered graph, which was empty until edges loaded
+- Normalize the Gaussian halo curve so alpha reaches zero at the sprite boundary; previously a soft halo left a faint hard ring where overlapping halos cut into each other
+
 ## 0.10.0 - 2026-03-08
 
 ### Added

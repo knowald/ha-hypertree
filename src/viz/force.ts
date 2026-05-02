@@ -3,6 +3,7 @@ import type { TreeNode } from "../tree/types";
 import type { HaState, Registries } from "../ha/types";
 import { color, showTip, hideTip, flatten } from "./shared";
 import { randomizeColors, resetColors, getDomainColors, setDomainColors, setDomainColor, domainList } from "../render/colors";
+import { getEntityIconName, getCachedIcon, requestIcon, setIconResolveCallback } from "../render/icons";
 import { createTransform, applyWheel, screenToWorld, type ZoomTransform } from "./zoom";
 import { buildTree, buildTreeByDevice } from "../tree/build";
 import { loadCredentials, saveCredentials } from "../login";
@@ -64,6 +65,8 @@ const SETTINGS_KEY = "ha-hypertree-force-settings";
 interface ForceSettings {
   showHulls: boolean;
   showLabels: boolean;
+  showStructureLabels: boolean;
+  showIcons: boolean;
   showEntities: boolean;
   showAutomationEdges: boolean;
   unavailableMode: UnavailableMode;
@@ -77,13 +80,14 @@ interface ForceSettings {
   effectScale: number;
   twinkleSpeed: number;
   twinkleSize: number;
+  twinkleMin: number;
+  haloFalloff: number;
   lineGlow: number;
   glowBrightness: number;
   glowSize: number;
   starEffect: StarEffect;
   labelSize: number;
   entityDotSize: number;
-  parentLabelZoom: number;
   entityLabelZoom: number;
   repulsion: number;
   springLen: number;
@@ -105,26 +109,29 @@ type InitialLayout = "tree" | "scatter";
 const defaults: ForceSettings = {
   showHulls: false,
   showLabels: true,
+  showStructureLabels: true,
+  showIcons: true,
   showEntities: true,
   showAutomationEdges: false,
   unavailableMode: "ring",
   changedOnly: true,
-  constellation: false,
+  constellation: true,
   groupBy: "area",
   structureMode: "domain",
-  starSize: 1.7,
-  glowIntensity: 0.8,
+  starSize: 1.4,
+  glowIntensity: 0.6,
   parentGlowIntensity: 0.2,
-  effectScale: 1.2,
-  twinkleSpeed: 0.1,
-  twinkleSize: 0.1,
-  lineGlow: 0.5,
-  glowBrightness: 1.6,
-  glowSize: 11,
+  effectScale: 1.1,
+  twinkleSpeed: 0,
+  twinkleSize: 0.2,
+  twinkleMin: 0.5,
+  haloFalloff: 1,
+  lineGlow: 0.7,
+  glowBrightness: 0.7,
+  glowSize: 14,
   starEffect: "supernova",
   labelSize: 16,
   entityDotSize: 16,
-  parentLabelZoom: 1.5,
   entityLabelZoom: 2.5,
   repulsion: 3000,
   springLen: 64,
@@ -158,10 +165,10 @@ function loadSettings(): ForceSettings {
 
 function saveSettings(): void {
   const s: ForceSettings = {
-    showHulls, showLabels, showEntities, showAutomationEdges, unavailableMode, changedOnly, constellation, groupBy, structureMode,
-    starSize, glowIntensity, twinkleSpeed, twinkleSize, lineGlow, glowBrightness, glowSize,
+    showHulls, showLabels, showStructureLabels, showIcons, showEntities, showAutomationEdges, unavailableMode, changedOnly, constellation, groupBy, structureMode,
+    starSize, glowIntensity, twinkleSpeed, twinkleSize, twinkleMin, haloFalloff, lineGlow, glowBrightness, glowSize,
     starEffect, parentGlowIntensity, effectScale,
-    labelSize, entityDotSize, parentLabelZoom, entityLabelZoom,
+    labelSize, entityDotSize, entityLabelZoom,
     repulsion, springLen, springK, damping,
     automationOnly, appearOnChange, backgroundColor, initialLayout,
     hiddenDomains, hiddenAreas, stateFilter, searchAsFilter,
@@ -172,6 +179,8 @@ function saveSettings(): void {
 const saved = loadSettings();
 let showHulls = saved.showHulls;
 let showLabels = saved.showLabels;
+let showStructureLabels = saved.showStructureLabels;
+let showIcons = saved.showIcons;
 let showEntities = saved.showEntities;
 let showAutomationEdges = saved.showAutomationEdges;
 let unavailableMode: UnavailableMode = saved.unavailableMode;
@@ -186,6 +195,8 @@ let parentGlowIntensity = saved.parentGlowIntensity;
 let effectScale = saved.effectScale;
 let twinkleSpeed = saved.twinkleSpeed;
 let twinkleSize = saved.twinkleSize;
+let twinkleMin = saved.twinkleMin;
+let haloFalloff = saved.haloFalloff;
 let lineGlow = saved.lineGlow;
 let glowBrightness = saved.glowBrightness;
 let glowSize = saved.glowSize;
@@ -194,7 +205,6 @@ let starEffect: StarEffect = saved.starEffect;
 
 let labelSize = saved.labelSize;
 let entityDotSize = saved.entityDotSize;
-let parentLabelZoom = saved.parentLabelZoom;
 let entityLabelZoom = saved.entityLabelZoom;
 
 let hoveredNode: FNode | null = null;
@@ -202,6 +212,9 @@ let hoverStartTime = 0;
 let searchQuery = "";
 let didDrag = false;
 let contextMenu: HTMLElement | null = null;
+let contextMenuDismiss: ((ev: MouseEvent) => void) | null = null;
+let contextMenuDismissTimer: number | null = null;
+let onMouseLeave: (() => void) | null = null;
 
 let repulsion = saved.repulsion;
 let springLen = saved.springLen;
@@ -236,7 +249,7 @@ let onAutomationLoaded: (() => void) | null = null;
 const GLOW_DURATION = 3000;
 
 // Star sprite cache: pre-rendered gradient stars keyed by "color|sizeCategory|glowParam"
-const spriteCache = new Map<string, { canvas: OffscreenCanvas; size: number }>();
+const spriteCache = new Map<string, StarSprite>();
 let spriteCacheVersion = 0;
 let lastSpriteParams = "";
 
@@ -253,83 +266,92 @@ function invalidateSpriteCache(): void {
   }
 }
 
-function getStarSprite(nodeCol: string, intensity: number): { canvas: OffscreenCanvas; size: number } {
-  const key = `${nodeCol}|${intensity}|${spriteCacheVersion}`;
-  let entry = spriteCache.get(key);
-  if (entry) return entry;
+interface StarSprite {
+  halo: OffscreenCanvas;
+  core: OffscreenCanvas;
+  size: number;
+}
 
-  // Sprite dimensions: the halo is the largest element at 8 * intensity relative to base star size.
-  // We render at a fixed pixel resolution and scale when drawing.
-  // Use a base of 128px for the halo radius, so total sprite is 256x256.
+function getStarSprite(nodeCol: string, intensity: number): StarSprite {
+  const key = `${nodeCol}|${intensity}|${haloFalloff}|${spriteCacheVersion}`;
+  const cached = spriteCache.get(key);
+  if (cached) return cached;
+
   const spritePixels = 256;
   const center = spritePixels / 2;
-  const haloR = center; // fills the sprite
-  const innerR = (center / 8) * 3 * intensity; // starR * 3 * intensity relative to haloR = starR * 8 * intensity
+  const haloR = center;
+  const innerR = (center / 8) * 3 * intensity;
   const coreR = (center / 8) * 0.6;
   const spikeLen = (center / 8) * 3;
 
-  const oc = new OffscreenCanvas(spritePixels, spritePixels);
-  const sctx = oc.getContext("2d")!;
+  const haloCanvas = new OffscreenCanvas(spritePixels, spritePixels);
+  const hctx = haloCanvas.getContext("2d")!;
 
-  // Outer glow (tighter falloff)
-  const outerGlow = sctx.createRadialGradient(center, center, 0, center, center, haloR);
-  outerGlow.addColorStop(0, nodeCol);
-  outerGlow.addColorStop(0.15, nodeCol);
-  outerGlow.addColorStop(0.5, transparent(nodeCol));
-  outerGlow.addColorStop(1, transparent(nodeCol));
-  sctx.globalAlpha = 0.7 * intensity;
-  sctx.fillStyle = outerGlow;
-  sctx.beginPath();
-  sctx.arc(center, center, haloR, 0, Math.PI * 2);
-  sctx.fill();
+  const sigma = 0.15 + 0.55 * haloFalloff;
+  const baseline = Math.exp(-(1 / sigma) * (1 / sigma));
+  const norm = 1 / (1 - baseline);
+  const stops = 12;
+  const outerGlow = hctx.createRadialGradient(center, center, 0, center, center, haloR);
+  for (let i = 0; i <= stops; i++) {
+    const t = i / stops;
+    const raw = Math.exp(-(t / sigma) * (t / sigma));
+    const a = Math.max(0, (raw - baseline) * norm);
+    const whiten = Math.min(1, a * 1.4) * 0.3;
+    outerGlow.addColorStop(t, rgbaFromHex(nodeCol, a, whiten));
+  }
+  hctx.globalAlpha = 0.7 * intensity;
+  hctx.fillStyle = outerGlow;
+  hctx.beginPath();
+  hctx.arc(center, center, haloR, 0, Math.PI * 2);
+  hctx.fill();
 
-  // Inner glow (brighter, tighter)
-  const innerGlow = sctx.createRadialGradient(center, center, 0, center, center, innerR);
+  const coreCanvas = new OffscreenCanvas(spritePixels, spritePixels);
+  const cctx = coreCanvas.getContext("2d")!;
+
+  const innerGlow = cctx.createRadialGradient(center, center, 0, center, center, innerR);
   innerGlow.addColorStop(0, "#fff");
   innerGlow.addColorStop(0.2, "#fff");
   innerGlow.addColorStop(0.5, nodeCol);
   innerGlow.addColorStop(1, transparent(nodeCol));
-  sctx.globalAlpha = 0.9 * intensity;
-  sctx.fillStyle = innerGlow;
-  sctx.beginPath();
-  sctx.arc(center, center, innerR, 0, Math.PI * 2);
-  sctx.fill();
+  cctx.globalAlpha = 0.9 * intensity;
+  cctx.fillStyle = innerGlow;
+  cctx.beginPath();
+  cctx.arc(center, center, innerR, 0, Math.PI * 2);
+  cctx.fill();
 
-  // Core dot (larger)
-  sctx.globalAlpha = 1;
-  sctx.fillStyle = "#fff";
-  sctx.beginPath();
-  sctx.arc(center, center, coreR * 1.8, 0, Math.PI * 2);
-  sctx.fill();
+  cctx.globalAlpha = 1;
+  cctx.fillStyle = "#fff";
+  cctx.beginPath();
+  cctx.arc(center, center, coreR * 1.8, 0, Math.PI * 2);
+  cctx.fill();
 
-  // Cross spikes (brighter, thicker)
-  const spikeGrad = sctx.createLinearGradient(center - spikeLen, center, center + spikeLen, center);
+  const spikeGrad = cctx.createLinearGradient(center - spikeLen, center, center + spikeLen, center);
   spikeGrad.addColorStop(0, transparent(nodeCol));
   spikeGrad.addColorStop(0.3, nodeCol);
   spikeGrad.addColorStop(0.5, "#fff");
   spikeGrad.addColorStop(0.7, nodeCol);
   spikeGrad.addColorStop(1, transparent(nodeCol));
-  sctx.strokeStyle = spikeGrad;
-  sctx.globalAlpha = 0.8;
-  sctx.lineWidth = 1.5;
-  sctx.beginPath();
-  sctx.moveTo(center - spikeLen, center);
-  sctx.lineTo(center + spikeLen, center);
-  sctx.stroke();
+  cctx.strokeStyle = spikeGrad;
+  cctx.globalAlpha = 0.8;
+  cctx.lineWidth = 1.5;
+  cctx.beginPath();
+  cctx.moveTo(center - spikeLen, center);
+  cctx.lineTo(center + spikeLen, center);
+  cctx.stroke();
 
-  const vSpikeGrad = sctx.createLinearGradient(center, center - spikeLen, center, center + spikeLen);
+  const vSpikeGrad = cctx.createLinearGradient(center, center - spikeLen, center, center + spikeLen);
   vSpikeGrad.addColorStop(0, transparent(nodeCol));
   vSpikeGrad.addColorStop(0.3, nodeCol);
   vSpikeGrad.addColorStop(0.5, "#fff");
   vSpikeGrad.addColorStop(0.7, nodeCol);
   vSpikeGrad.addColorStop(1, transparent(nodeCol));
-  sctx.strokeStyle = vSpikeGrad;
-  sctx.beginPath();
-  sctx.moveTo(center, center - spikeLen);
-  sctx.lineTo(center, center + spikeLen);
-  sctx.stroke();
+  cctx.strokeStyle = vSpikeGrad;
+  cctx.beginPath();
+  cctx.moveTo(center, center - spikeLen);
+  cctx.lineTo(center, center + spikeLen);
+  cctx.stroke();
 
-  entry = { canvas: oc, size: spritePixels };
+  const entry: StarSprite = { halo: haloCanvas, core: coreCanvas, size: spritePixels };
   spriteCache.set(key, entry);
   return entry;
 }
@@ -371,10 +393,13 @@ export function createForceViz(registries: Registries, haUrl?: string, connectio
       resize();
       if (showAutomationEdges || automationOnly) loadAutomationEdges();
 
+      setIconResolveCallback(() => ensureLoop());
+
+      onMouseLeave = () => { dragNode = null; panning = false; hoveredNode = null; hideTip(); };
       canvas.addEventListener("mousedown", onMouseDown);
       canvas.addEventListener("mousemove", onMouseMove);
       canvas.addEventListener("mouseup", onMouseUp);
-      canvas.addEventListener("mouseleave", () => { dragNode = null; panning = false; hoveredNode = null; hideTip(); });
+      canvas.addEventListener("mouseleave", onMouseLeave);
       canvas.addEventListener("wheel", onWheel, { passive: false });
       canvas.addEventListener("contextmenu", onContextMenu);
 
@@ -386,9 +411,16 @@ export function createForceViz(registries: Registries, haUrl?: string, connectio
       frame = 0;
       if (canvas) {
         (canvas as any).__obs?.disconnect();
+        canvas.removeEventListener("mousedown", onMouseDown);
+        canvas.removeEventListener("mousemove", onMouseMove);
+        canvas.removeEventListener("mouseup", onMouseUp);
+        if (onMouseLeave) canvas.removeEventListener("mouseleave", onMouseLeave);
+        canvas.removeEventListener("wheel", onWheel);
+        canvas.removeEventListener("contextmenu", onContextMenu);
         canvas = null;
         ctx = null;
       }
+      onMouseLeave = null;
       if (glassContainer) {
         glassContainer.remove();
         glassContainer = null;
@@ -413,6 +445,7 @@ export function createForceViz(registries: Registries, haUrl?: string, connectio
       pendingReveals = [];
       if (revealTimer) { clearTimeout(revealTimer); revealTimer = null; }
       dismissContextMenu();
+      setIconResolveCallback(null);
       dragNode = null;
       panning = false;
     },
@@ -816,13 +849,13 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   // VIEW TAB
   // =====================
 
-  viewTab.appendChild(makeSelect("Structure", ["domain", "device"], structureMode, (v) => {
+  viewTab.appendChild(makeSegmented("Structure", ["domain", "device"], structureMode, (v) => {
     structureMode = v as StructureMode;
     rebuildWithStructure();
     saveSettings();
   }));
 
-  viewTab.appendChild(makeSelect("Layout", ["tree", "scatter"], initialLayout, (v) => {
+  viewTab.appendChild(makeSegmented("Layout", ["tree", "scatter"], initialLayout, (v) => {
     initialLayout = v as InitialLayout;
     rebuildGraph();
     saveSettings();
@@ -888,11 +921,13 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   constellationSubOptions.appendChild(makeSlider("Effect scale", 0.5, 5, effectScale, 0.1, (v) => { effectScale = v; saveSettings(); }, "Size of state-change effects"));
   constellationSubOptions.appendChild(makeSlider("Twinkle speed", 0, 5, twinkleSpeed, 0.1, (v) => { twinkleSpeed = v; saveSettings(); }));
   constellationSubOptions.appendChild(makeSlider("Twinkle size", 0, 1, twinkleSize, 0.05, (v) => { twinkleSize = v; saveSettings(); }, "Halo radius pulsing with twinkle"));
+  constellationSubOptions.appendChild(makeSlider("Twinkle floor", 0, 1, twinkleMin, 0.05, (v) => { twinkleMin = v; saveSettings(); }, "Minimum brightness during twinkle dip"));
+  constellationSubOptions.appendChild(makeSlider("Halo spread", 0, 1, haloFalloff, 0.05, (v) => { haloFalloff = v; saveSettings(); }, "Gaussian halo width: low = tight bright peak, high = broad soft glow"));
   constellationSubOptions.appendChild(makeSelect("Effect",
     ["supernova", "shooting-star", "flare", "pulse-wave", "color-shift"],
     starEffect, (v) => { starEffect = v as StarEffect; saveSettings(); }, "Animation on entity state change"));
 
-  hullSubOptions.appendChild(makeSelect("Grouping", ["area", "domain"], groupBy, (v) => {
+  hullSubOptions.appendChild(makeSegmented("Grouping", ["area", "domain"], groupBy, (v) => {
     groupBy = v as GroupMode;
     rebuildClusters();
     saveSettings();
@@ -1149,6 +1184,18 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   // =====================
 
   styleTab.appendChild(makeToggle("Labels", showLabels, (v) => { showLabels = v; saveSettings(); }));
+  styleTab.appendChild(makeToggle(
+    "Structure labels",
+    showStructureLabels,
+    (v) => { showStructureLabels = v; saveSettings(); },
+    "Show labels on grouping nodes (domains in domain mode, devices in device mode)"
+  ));
+  styleTab.appendChild(makeToggle(
+    "Entity icons",
+    showIcons,
+    (v) => { showIcons = v; saveSettings(); },
+    "Render Material Design Icons on entity nodes (resolved from Home Assistant)"
+  ));
   changedOnlyToggle = makeToggle("Skip unchanged", changedOnly, (v) => {
     changedOnly = v;
     saveSettings();
@@ -1158,7 +1205,6 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   syncSettingsState();
 
   styleTab.appendChild(makeSlider("Label size", 4, 24, labelSize, 1, (v) => { labelSize = v; saveSettings(); }));
-  styleTab.appendChild(makeSlider("Parent label zoom", 0.5, 5, parentLabelZoom, 0.1, (v) => { parentLabelZoom = v; saveSettings(); }, "Zoom level to show structural labels"));
   styleTab.appendChild(makeSlider("Entity label zoom", 0.5, 5, entityLabelZoom, 0.1, (v) => { entityLabelZoom = v; saveSettings(); }, "Zoom level to show entity labels"));
   styleTab.appendChild(makeSlider("Entity dot size", 1, 16, entityDotSize, 0.5, (v) => {
     entityDotSize = v;
@@ -1279,6 +1325,8 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
     Object.assign(saved, defaults);
     showHulls = defaults.showHulls;
     showLabels = defaults.showLabels;
+    showStructureLabels = defaults.showStructureLabels;
+    showIcons = defaults.showIcons;
     showEntities = defaults.showEntities;
     showAutomationEdges = defaults.showAutomationEdges;
     unavailableMode = defaults.unavailableMode;
@@ -1292,13 +1340,14 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
     effectScale = defaults.effectScale;
     twinkleSpeed = defaults.twinkleSpeed;
     twinkleSize = defaults.twinkleSize;
+    twinkleMin = defaults.twinkleMin;
+    haloFalloff = defaults.haloFalloff;
     lineGlow = defaults.lineGlow;
     glowBrightness = defaults.glowBrightness;
     glowSize = defaults.glowSize;
     starEffect = defaults.starEffect;
     labelSize = defaults.labelSize;
     entityDotSize = defaults.entityDotSize;
-    parentLabelZoom = defaults.parentLabelZoom;
     entityLabelZoom = defaults.entityLabelZoom;
     repulsion = defaults.repulsion;
     springLen = defaults.springLen;
@@ -1369,6 +1418,8 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
           const s = loadSettings();
           showHulls = s.showHulls;
           showLabels = s.showLabels;
+          showStructureLabels = s.showStructureLabels;
+          showIcons = s.showIcons;
           showEntities = s.showEntities;
           showAutomationEdges = s.showAutomationEdges;
           unavailableMode = s.unavailableMode;
@@ -1382,13 +1433,14 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
           effectScale = s.effectScale;
           twinkleSpeed = s.twinkleSpeed;
           twinkleSize = s.twinkleSize;
+          twinkleMin = s.twinkleMin;
+          haloFalloff = s.haloFalloff;
           lineGlow = s.lineGlow;
           glowBrightness = s.glowBrightness;
           glowSize = s.glowSize;
           starEffect = s.starEffect;
           labelSize = s.labelSize;
           entityDotSize = s.entityDotSize;
-          parentLabelZoom = s.parentLabelZoom;
           entityLabelZoom = s.entityLabelZoom;
           repulsion = s.repulsion;
           springLen = s.springLen;
@@ -1484,6 +1536,33 @@ function makeSelect(label: string, options: string[], initial: string, onChange:
   }
   select.addEventListener("change", () => onChange(select.value));
   el.appendChild(select);
+  return el;
+}
+
+function makeSegmented(label: string, options: string[], initial: string, onChange: (v: string) => void, tooltip?: string): HTMLLabelElement {
+  const el = document.createElement("label");
+  el.className = "toggle-label";
+  if (tooltip) el.title = tooltip;
+  el.appendChild(document.createTextNode(label));
+  const wrap = document.createElement("div");
+  wrap.className = "force-segmented";
+  const buttons: HTMLButtonElement[] = [];
+  for (const opt of options) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "force-segmented-btn";
+    btn.textContent = opt;
+    if (opt === initial) btn.classList.add("active");
+    btn.addEventListener("click", () => {
+      if (btn.classList.contains("active")) return;
+      for (const b of buttons) b.classList.remove("active");
+      btn.classList.add("active");
+      onChange(opt);
+    });
+    buttons.push(btn);
+    wrap.appendChild(btn);
+  }
+  el.appendChild(wrap);
   return el;
 }
 
@@ -1586,13 +1665,13 @@ async function loadAutomationEdges(): Promise<void> {
   automationLoading = true;
 
   const automationEntityIds: string[] = [];
-  for (const id of entityNodeMap.keys()) {
+  for (const id of allEntityTreeNodes.keys()) {
     if (id.startsWith("automation.")) automationEntityIds.push(id);
   }
 
-  debugLog("system", `Automation: found ${automationEntityIds.length} automation entities in graph`);
+  debugLog("system", `Automation: found ${automationEntityIds.length} automation entities in registry`);
 
-  const knownEntityIds = new Set(entityNodeMap.keys());
+  const knownEntityIds = new Set(allEntityTreeNodes.keys());
 
   try {
     automationEdges = await fetchAutomationEdges(haConnection, automationEntityIds, knownEntityIds);
@@ -2179,33 +2258,38 @@ function drawLabels(ctx: CanvasRenderingContext2D): void {
     const isGlass = kind === "root" || isArea;
 
     if (isEntity && transform.k < entityLabelZoom) continue;
-    if (isMiddle && transform.k < parentLabelZoom) continue;
+    if (isMiddle && !showStructureLabels) continue;
 
     let labelAlpha = 1;
     if (isEntity) {
       labelAlpha = Math.min(1, (transform.k - entityLabelZoom) / 0.5);
-    } else if (isMiddle) {
-      labelAlpha = Math.min(1, (transform.k - parentLabelZoom) / 0.5);
     }
 
     const alpha = Math.max(0.3, labelAlpha);
+    const middleFontSize = labelSize * 1.15;
+    const middlePad = 3;
+    const middleRadius = 3;
+    const middleGap = 2;
 
     if (kind === "root") {
       ctx.font = `700 ${parentFontSize * 1.2}px ${fontFamily}`;
     } else if (isArea) {
       ctx.font = `600 ${parentFontSize}px ${fontFamily}`;
     } else if (isMiddle) {
-      ctx.font = `500 ${parentFontSize}px ${fontFamily}`;
+      ctx.font = `500 ${middleFontSize}px ${fontFamily}`;
     } else {
       ctx.font = `${entityFontSize}px ${fontFamily}`;
     }
 
-    const labelY = n.y + n.r + 2 / transform.k;
+    const gap = isMiddle ? middleGap : 2 / transform.k;
+    const labelY = n.y + n.r + gap;
     const metrics = ctx.measureText(n.tree.label);
     const ascent = metrics.actualBoundingBoxAscent;
     const descent = metrics.actualBoundingBoxDescent;
     const textH = ascent + descent;
     const textY = labelY + ascent;
+    const labelPad = isMiddle ? middlePad : pad;
+    const labelRadius = isMiddle ? middleRadius : radius;
 
     if (isGlass && glassContainer) {
       // Position glass overlay div for root/area labels
@@ -2218,12 +2302,16 @@ function drawLabels(ctx: CanvasRenderingContext2D): void {
       const div = glassLabels[glassIndex++];
       const screenX = n.x * transform.k + transform.x;
       const screenY = textY * transform.k + transform.y;
-      const screenFontSize = kind === "root" ? labelSize * 1.4 * 1.2 : labelSize * 1.4;
+      const baseFontSize = kind === "root" ? labelSize * 1.4 * 1.2 : labelSize * 1.4;
+      const screenFontSize = baseFontSize * transform.k;
+      const padY = 2 * transform.k;
+      const padX = 8 * transform.k;
       const weight = kind === "root" ? "700" : "600";
       div.textContent = n.tree.label;
       div.style.left = `${screenX}px`;
       div.style.top = `${screenY}px`;
       div.style.fontSize = `${screenFontSize}px`;
+      div.style.padding = `${padY}px ${padX}px`;
       div.style.fontWeight = weight;
       div.style.opacity = String(alpha);
       div.style.display = "";
@@ -2233,11 +2321,11 @@ function drawLabels(ctx: CanvasRenderingContext2D): void {
       ctx.fillStyle = "#000000";
       ctx.beginPath();
       ctx.roundRect(
-        n.x - metrics.width / 2 - pad,
-        textY - ascent - pad,
-        metrics.width + pad * 2,
-        textH + pad * 2,
-        radius
+        n.x - metrics.width / 2 - labelPad,
+        textY - ascent - labelPad,
+        metrics.width + labelPad * 2,
+        textH + labelPad * 2,
+        labelRadius
       );
       ctx.fill();
 
@@ -2261,6 +2349,26 @@ function transparent(hex: string): string {
     hex = "#" + hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3];
   }
   return hex + "00";
+}
+
+function expandHex(hex: string): string {
+  if (hex.length === 4) {
+    return "#" + hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3];
+  }
+  return hex;
+}
+
+function rgbaFromHex(hex: string, alpha: number, whiten = 0): string {
+  const h = expandHex(hex);
+  let r = parseInt(h.slice(1, 3), 16);
+  let g = parseInt(h.slice(3, 5), 16);
+  let b = parseInt(h.slice(5, 7), 16);
+  if (whiten > 0) {
+    r = Math.round(r + (255 - r) * whiten);
+    g = Math.round(g + (255 - g) * whiten);
+    b = Math.round(b + (255 - b) * whiten);
+  }
+  return `rgba(${r},${g},${b},${alpha})`;
 }
 
 function matchesSearch(fn: FNode): boolean {
@@ -2446,7 +2554,7 @@ function drawConstellation(ctx: CanvasRenderingContext2D, now: number): void {
 
   invalidateSpriteCache();
 
-  ctx.globalCompositeOperation = "lighter";
+  ctx.globalCompositeOperation = "screen";
 
   for (const fn of fnodes) {
     if (fn.tree.kind !== "entity") continue;
@@ -2455,7 +2563,9 @@ function drawConstellation(ctx: CanvasRenderingContext2D, now: number): void {
     const twinkle = twinkleSpeed === 0 ? 1 : 0.5 + 0.5 * Math.sin(now * 0.003 * twinkleSpeed + fn.phase);
     const pulse = twinkle * twinkle;
     const baseAlpha = unavail ? 0.15 : 0.5;
-    const starAlpha = Math.min(1, baseAlpha * (0.15 + 0.85 * pulse) * glowBrightness);
+    const twinklePulse = twinkleMin + (1 - twinkleMin) * pulse;
+    const haloAlpha = Math.min(1, baseAlpha * twinklePulse * glowBrightness);
+    const coreAlpha = Math.min(1, twinklePulse * (unavail ? 0.4 : 1));
 
     const nodeCol = unavail ? "#666" : color(fn.tree);
     const starR = 5 * starScale;
@@ -2464,8 +2574,10 @@ function drawConstellation(ctx: CanvasRenderingContext2D, now: number): void {
     const sprite = getStarSprite(nodeCol, glowIntensity);
     const drawSize = haloR * 2;
 
-    ctx.globalAlpha = starAlpha;
-    ctx.drawImage(sprite.canvas, fn.x - haloR, fn.y - haloR, drawSize, drawSize);
+    ctx.globalAlpha = haloAlpha;
+    ctx.drawImage(sprite.halo, fn.x - haloR, fn.y - haloR, drawSize, drawSize);
+    ctx.globalAlpha = coreAlpha;
+    ctx.drawImage(sprite.core, fn.x - haloR, fn.y - haloR, drawSize, drawSize);
   }
 
   ctx.globalCompositeOperation = "source-over";
@@ -2476,14 +2588,16 @@ function drawConstellationParents(ctx: CanvasRenderingContext2D, now: number): v
   const starScale = starSize / Math.sqrt(transform.k);
   const pgi = parentGlowIntensity;
 
-  ctx.globalCompositeOperation = "lighter";
+  ctx.globalCompositeOperation = "screen";
 
   for (const fn of fnodes) {
     if (fn.tree.kind === "entity") continue;
 
     const twinkle = twinkleSpeed === 0 ? 1 : 0.5 + 0.5 * Math.sin(now * 0.003 * twinkleSpeed + fn.phase);
     const pulse = twinkle * twinkle;
-    const starAlpha = Math.min(1, 0.9 * (0.15 + 0.85 * pulse) * glowBrightness);
+    const twinklePulse = twinkleMin + (1 - twinkleMin) * pulse;
+    const haloAlpha = Math.min(1, 0.9 * twinklePulse * glowBrightness);
+    const coreAlpha = Math.min(1, twinklePulse);
 
     const nodeCol = color(fn.tree);
     const starR = (fn.tree.kind === "root" ? 14 : 9) * starScale;
@@ -2492,8 +2606,10 @@ function drawConstellationParents(ctx: CanvasRenderingContext2D, now: number): v
     const sprite = getStarSprite(nodeCol, pgi);
     const drawSize = haloR * 2;
 
-    ctx.globalAlpha = starAlpha;
-    ctx.drawImage(sprite.canvas, fn.x - haloR, fn.y - haloR, drawSize, drawSize);
+    ctx.globalAlpha = haloAlpha;
+    ctx.drawImage(sprite.halo, fn.x - haloR, fn.y - haloR, drawSize, drawSize);
+    ctx.globalAlpha = coreAlpha;
+    ctx.drawImage(sprite.core, fn.x - haloR, fn.y - haloR, drawSize, drawSize);
   }
 
   ctx.globalCompositeOperation = "source-over";
@@ -2519,9 +2635,11 @@ function drawConstellationHover(ctx: CanvasRenderingContext2D): void {
   const sprite = getStarSprite(nodeCol, intensity);
   const drawSize = haloR * 2;
 
-  ctx.globalCompositeOperation = "lighter";
+  ctx.globalCompositeOperation = "screen";
   ctx.globalAlpha = 0.6 * ease;
-  ctx.drawImage(sprite.canvas, fn.x - haloR, fn.y - haloR, drawSize, drawSize);
+  ctx.drawImage(sprite.halo, fn.x - haloR, fn.y - haloR, drawSize, drawSize);
+  ctx.globalAlpha = ease;
+  ctx.drawImage(sprite.core, fn.x - haloR, fn.y - haloR, drawSize, drawSize);
   ctx.globalCompositeOperation = "source-over";
   ctx.globalAlpha = 1;
 }
@@ -2875,6 +2993,28 @@ function draw(): void {
       ctx.fillStyle = dimmed ? "#666" : color(n.tree);
       ctx.fill();
     }
+
+    if (showIcons && n.tree.kind === "entity" && n.tree.entityId) {
+      const stateAttrIcon = currentStates.get(n.tree.entityId)?.attributes.icon;
+      const iconName = getEntityIconName(n.tree.domain, stateAttrIcon);
+      if (iconName) {
+        const icon = getCachedIcon(iconName);
+        if (icon) {
+          const s = (n.r * 1.25) / icon.viewBox;
+          const half = icon.viewBox / 2;
+          ctx.save();
+          ctx.translate(n.x, n.y);
+          ctx.scale(s, s);
+          ctx.translate(-half, -half);
+          ctx.fillStyle = "#fff";
+          ctx.globalAlpha = dimmed ? 0.5 : 0.95;
+          ctx.fill(icon.path);
+          ctx.restore();
+        } else {
+          requestIcon(iconName);
+        }
+      }
+    }
   }
   ctx.globalAlpha = 1;
 
@@ -3019,7 +3159,7 @@ function onMouseUp(e: MouseEvent): void {
       if (e.shiftKey && isCollapsible(dragNode.tree)) {
         toggleCollapse(dragNode);
       } else {
-        performClickAction(dragNode.tree);
+        onContextMenu(e);
       }
     }
     dragNode.fx = null;
@@ -3048,10 +3188,6 @@ function deviceIdFromNodeId(nodeId: string): string {
   return parts.slice(2).join(":");
 }
 
-function performClickAction(node: TreeNode): void {
-  copyNodeId(node);
-}
-
 function copyNodeId(node: TreeNode): void {
   const id = nodeActionId(node);
   if (!id) return;
@@ -3067,6 +3203,124 @@ function openHaPage(node: TreeNode, page: "history" | "logbook"): void {
     window.open(`${base}/config/areas/area/${id}`, "_blank");
   } else {
     window.open(`${base}/${page}?entity_id=${id}`, "_blank");
+  }
+}
+
+interface ServiceAction {
+  label: string;
+  service: string;
+  confirm?: boolean;
+}
+
+const SERVICE_ACTIONS: Record<string, ServiceAction[]> = {
+  light: [
+    { label: "Toggle", service: "toggle" },
+    { label: "Turn on", service: "turn_on" },
+    { label: "Turn off", service: "turn_off" },
+  ],
+  switch: [
+    { label: "Toggle", service: "toggle" },
+    { label: "Turn on", service: "turn_on" },
+    { label: "Turn off", service: "turn_off" },
+  ],
+  fan: [
+    { label: "Toggle", service: "toggle" },
+    { label: "Turn on", service: "turn_on" },
+    { label: "Turn off", service: "turn_off" },
+  ],
+  input_boolean: [
+    { label: "Toggle", service: "toggle" },
+    { label: "Turn on", service: "turn_on" },
+    { label: "Turn off", service: "turn_off" },
+  ],
+  humidifier: [
+    { label: "Toggle", service: "toggle" },
+    { label: "Turn on", service: "turn_on" },
+    { label: "Turn off", service: "turn_off" },
+  ],
+  script: [
+    { label: "Run", service: "turn_on" },
+    { label: "Stop", service: "turn_off" },
+  ],
+  scene: [
+    { label: "Activate", service: "turn_on" },
+  ],
+  automation: [
+    { label: "Trigger", service: "trigger" },
+    { label: "Toggle", service: "toggle" },
+    { label: "Turn on", service: "turn_on" },
+    { label: "Turn off", service: "turn_off" },
+  ],
+  cover: [
+    { label: "Open", service: "open_cover" },
+    { label: "Close", service: "close_cover" },
+    { label: "Stop", service: "stop_cover" },
+    { label: "Toggle", service: "toggle" },
+  ],
+  lock: [
+    { label: "Unlock", service: "unlock", confirm: true },
+    { label: "Lock", service: "lock" },
+  ],
+  media_player: [
+    { label: "Play/Pause", service: "media_play_pause" },
+    { label: "Stop", service: "media_stop" },
+    { label: "Turn on", service: "turn_on" },
+    { label: "Turn off", service: "turn_off" },
+  ],
+  vacuum: [
+    { label: "Start", service: "start" },
+    { label: "Pause", service: "pause" },
+    { label: "Return to base", service: "return_to_base" },
+    { label: "Stop", service: "stop" },
+  ],
+  button: [
+    { label: "Press", service: "press" },
+  ],
+  input_button: [
+    { label: "Press", service: "press" },
+  ],
+  remote: [
+    { label: "Turn on", service: "turn_on" },
+    { label: "Turn off", service: "turn_off" },
+  ],
+  siren: [
+    { label: "Turn on", service: "turn_on" },
+    { label: "Turn off", service: "turn_off" },
+  ],
+  water_heater: [
+    { label: "Turn on", service: "turn_on" },
+    { label: "Turn off", service: "turn_off" },
+  ],
+  climate: [
+    { label: "Turn on", service: "turn_on" },
+    { label: "Turn off", service: "turn_off" },
+  ],
+  valve: [
+    { label: "Open", service: "open_valve" },
+    { label: "Close", service: "close_valve" },
+    { label: "Toggle", service: "toggle" },
+  ],
+};
+
+async function callEntityService(domain: string, service: string, entityId: string): Promise<void> {
+  if (!haConnection) {
+    showToast("Not connected");
+    return;
+  }
+  try {
+    await haConnection.sendMessagePromise({
+      type: "call_service",
+      domain,
+      service,
+      target: { entity_id: entityId },
+    });
+    showToast(`${service.replace(/_/g, " ")}: ${entityId}`);
+  } catch (err) {
+    const msg = err && typeof err === "object" && "message" in err
+      ? String((err as { message: unknown }).message)
+      : String(err);
+    debugLog("system", `Service call failed: ${domain}.${service}`, msg);
+    showToast(`Failed: ${msg}`);
   }
 }
 
@@ -3088,6 +3342,14 @@ function showToast(message: string): void {
 }
 
 function dismissContextMenu(): void {
+  if (contextMenuDismissTimer !== null) {
+    clearTimeout(contextMenuDismissTimer);
+    contextMenuDismissTimer = null;
+  }
+  if (contextMenuDismiss) {
+    document.removeEventListener("mousedown", contextMenuDismiss);
+    contextMenuDismiss = null;
+  }
   if (contextMenu) {
     contextMenu.remove();
     contextMenu = null;
@@ -3117,6 +3379,25 @@ function onContextMenu(e: MouseEvent): void {
     btn.textContent = label;
     btn.addEventListener("click", () => { action(); dismissContextMenu(); });
     menu.appendChild(btn);
+  }
+
+  function addSeparator(): void {
+    const sep = document.createElement("div");
+    sep.className = "force-context-menu-sep";
+    menu.appendChild(sep);
+  }
+
+  if (node.entityId && node.domain) {
+    const actions = SERVICE_ACTIONS[node.domain];
+    if (actions && haConnection) {
+      for (const a of actions) {
+        addItem(a.label, () => {
+          if (a.confirm && !window.confirm(`${a.label}: ${node.entityId}?`)) return;
+          callEntityService(node.domain!, a.service, node.entityId!);
+        });
+      }
+      addSeparator();
+    }
   }
 
   addItem(`Copy ID: ${id}`, () => copyNodeId(node));
@@ -3162,8 +3443,11 @@ function onContextMenu(e: MouseEvent): void {
   const dismiss = (ev: MouseEvent) => {
     if (!menu.contains(ev.target as Node)) {
       dismissContextMenu();
-      document.removeEventListener("mousedown", dismiss);
     }
   };
-  setTimeout(() => document.addEventListener("mousedown", dismiss), 0);
+  contextMenuDismiss = dismiss;
+  contextMenuDismissTimer = window.setTimeout(() => {
+    contextMenuDismissTimer = null;
+    document.addEventListener("mousedown", dismiss);
+  }, 0);
 }

@@ -837,6 +837,43 @@ body {
   background: var(--bg);
 }
 
+.force-context-menu-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+.force-segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.force-segmented-btn {
+  padding: 0.25rem 0.6rem;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  text-transform: capitalize;
+}
+
+.force-segmented-btn:not(:last-child) {
+  border-right: 1px solid var(--border);
+}
+
+.force-segmented-btn:hover:not(.active) {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.force-segmented-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+
 /* Debug console */
 #debug-console {
   position: absolute;
