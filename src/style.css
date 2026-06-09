@@ -188,44 +188,6 @@ body {
   position: relative;
 }
 
-/* SVG */
-#hypertree-svg {
-  width: 100%;
-  height: 100%;
-  display: block;
-  cursor: grab;
-}
-
-.disk-boundary {
-  fill: var(--surface);
-  stroke: var(--border);
-  stroke-width: 0.004;
-}
-
-.edge {
-  fill: none;
-  stroke-width: 0.003;
-}
-
-.node {
-  cursor: pointer;
-  stroke: var(--bg);
-  stroke-width: 0.002;
-}
-
-.node:hover {
-  stroke: #fff;
-  stroke-width: 0.004;
-}
-
-.label {
-  fill: var(--text);
-  font-size: 0.028px;
-  text-anchor: middle;
-  dominant-baseline: auto;
-  user-select: none;
-}
-
 /* Tooltip */
 .tooltip {
   position: absolute;

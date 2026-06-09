@@ -250,16 +250,3 @@ export function flattenTree(root: TreeNode): TreeNode[] {
   }
   return nodes;
 }
-
-export function collectEdges(root: TreeNode): [TreeNode, TreeNode][] {
-  const edges: [TreeNode, TreeNode][] = [];
-  const stack: TreeNode[] = [root];
-  while (stack.length > 0) {
-    const node = stack.pop()!;
-    for (const child of node.children) {
-      edges.push([node, child]);
-      stack.push(child);
-    }
-  }
-  return edges;
-}

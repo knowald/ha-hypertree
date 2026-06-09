@@ -1,11 +1,11 @@
 import type { Connection } from "home-assistant-js-websocket";
 import type { TreeNode } from "../tree/types";
 import type { HaState, Registries } from "../ha/types";
-import { color, showTip, hideTip, flatten } from "./shared";
+import { color, showTip, hideTip } from "./shared";
 import { randomizeColors, resetColors, getDomainColors, setDomainColors, setDomainColor, domainList } from "../render/colors";
 import { getEntityIconName, getCachedIcon, requestIcon, setIconResolveCallback } from "../render/icons";
 import { createTransform, applyWheel, screenToWorld, type ZoomTransform } from "./zoom";
-import { buildTree, buildTreeByDevice } from "../tree/build";
+import { buildTree, buildTreeByDevice, flattenTree } from "../tree/build";
 import { loadCredentials, saveCredentials } from "../login";
 import { getRootElement } from "../rootElement";
 import { updateFps, debugLog } from "../debug";
@@ -1799,7 +1799,7 @@ function pruneEmptyBranches(nodes: TreeNode[]): TreeNode[] {
 }
 
 function buildGraph(root: TreeNode): void {
-  const allNodes = flatten(root);
+  const allNodes = flattenTree(root);
 
   allTreeNodesById = new Map();
   allEntityTreeNodes = new Map();

@@ -20,18 +20,3 @@ export function showTip(
 export function hideTip(): void {
   hideTooltip();
 }
-
-export function flatten(root: TreeNode): TreeNode[] {
-  const out: TreeNode[] = [];
-  const stack = [root];
-  while (stack.length) {
-    const n = stack.pop()!;
-    out.push(n);
-    for (let i = n.children.length - 1; i >= 0; i--) stack.push(n.children[i]);
-  }
-  return out;
-}
-
-export function leaves(root: TreeNode): TreeNode[] {
-  return flatten(root).filter((n) => n.children.length === 0);
-}
