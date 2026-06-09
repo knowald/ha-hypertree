@@ -253,6 +253,11 @@ body {
   z-index: 100;
 }
 
+#status.disconnected {
+  color: var(--error);
+  border-color: var(--error);
+}
+
 /* Loading spinner */
 .loading {
   display: flex;

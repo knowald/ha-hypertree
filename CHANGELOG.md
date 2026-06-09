@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.12.1 - 2026-06-10
+
+### Fixed
+
+- Show a red disconnect notice in the status bar while the WebSocket is down and resync all states once it reconnects; previously live updates silently stopped after a connection drop
+- Return to the login screen with an error when reconnection fails due to invalid authentication (standalone mode)
+- Close the previous connection and tear down its subscription, listeners, and render loop when reconnecting from the settings panel; the old session used to keep running in the background
+- Unsubscribe from state events and stop the render loop when the panel is removed from the DOM; the HA frontend connection outlives the panel, so the subscription used to leak on every panel switch
+- Recover to the login form when a reconnect attempt from the settings panel fails; it used to crash on a missing login button or leave a blank screen
+- Ignore repeated connect attempts while one is already in flight
+- Abort panel initialization if the panel is detached during the registry fetch, preventing a duplicate subscription on quick navigation
+
 ## 0.12.0 - 2026-05-02
 
 ### Added

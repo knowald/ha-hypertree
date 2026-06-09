@@ -1,8 +1,10 @@
 import type { Connection } from "home-assistant-js-websocket";
-import { setRootElement, getRootElement } from "./rootElement";
+import { setRootElement } from "./rootElement";
 import { fetchRegistries } from "./ha/registry";
 import { buildTree, flattenTree } from "./tree/build";
 import { initDebugConsole, debugLog } from "./debug";
+import { subscribeToStates, fetchAllStates, watchConnection } from "./ha/states";
+import { showStatusBar, setStatusDisconnected } from "./statusBar";
 import { createForceViz } from "./viz/force";
 import type { HaState } from "./ha/types";
 import styles from "./style.css?inline";
@@ -17,17 +19,10 @@ interface Hass {
   auth: HassAuth;
 }
 
-interface StateChangedEvent {
-  data: {
-    entity_id: string;
-    old_state: HaState | null;
-    new_state: HaState | null;
-  };
-}
-
 class HypertreePanel extends HTMLElement {
   private initialized = false;
-  private forceViz: ReturnType<typeof createForceViz> | null = null;
+  private initGeneration = 0;
+  private teardown: (() => void) | null = null;
   private states = new Map<string, HaState>();
   private container!: HTMLDivElement;
 
@@ -54,7 +49,16 @@ class HypertreePanel extends HTMLElement {
     }
   }
 
+  disconnectedCallback() {
+    // Invalidates any initPanel still awaiting the registry fetch.
+    this.initGeneration++;
+    this.teardown?.();
+    this.teardown = null;
+    this.initialized = false;
+  }
+
   private async initPanel(hass: Hass) {
+    const generation = ++this.initGeneration;
     initDebugConsole();
 
     const haUrl = hass.auth.data.hassUrl.replace(/\/+$/, "");
@@ -62,62 +66,45 @@ class HypertreePanel extends HTMLElement {
 
     try {
       const registries = await fetchRegistries(hass.connection);
+      if (generation !== this.initGeneration) return;
       const root = buildTree(registries);
       const nodes = flattenTree(root);
 
       const treeContainer = this.container.querySelector("#tree") as HTMLDivElement;
       treeContainer.innerHTML = "";
 
-      this.forceViz = createForceViz(registries, haUrl, hass.connection);
+      const forceViz = createForceViz(registries, haUrl, hass.connection);
 
       const vizContainer = document.createElement("div");
       vizContainer.id = "viz-container";
       treeContainer.appendChild(vizContainer);
-      this.forceViz.create(vizContainer, root, this.states);
+      forceViz.create(vizContainer, root, this.states);
 
-      this.subscribeToStates(hass.connection);
+      const unsubscribeStates = subscribeToStates(hass.connection, this.states, forceViz);
+      const unwatchConnection = watchConnection(hass.connection, {
+        onDisconnected: () => setStatusDisconnected(true),
+        onReady: () => {
+          setStatusDisconnected(false);
+          fetchAllStates(hass.connection, this.states, forceViz);
+        },
+      });
+
+      // The connection outlives this panel (it belongs to the HA frontend),
+      // so detach everything when the panel is removed from the DOM.
+      this.teardown = () => {
+        unsubscribeStates();
+        unwatchConnection();
+        forceViz.destroy();
+      };
 
       debugLog("system", `Loaded ${nodes.length} nodes across ${registries.areas.length} areas`);
-
-      const statusEl = document.createElement("div");
-      statusEl.id = "status";
-      statusEl.textContent = `${nodes.length} nodes | ${registries.areas.length} areas`;
-      getRootElement().appendChild(statusEl);
+      showStatusBar(`${nodes.length} nodes | ${registries.areas.length} areas`);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to load";
       debugLog("system", "Init failed: " + message);
       const treeContainer = this.container.querySelector("#tree") as HTMLDivElement;
       treeContainer.innerHTML = `<div class="loading"><span>${message}</span></div>`;
     }
-  }
-
-  private subscribeToStates(connection: Connection) {
-    connection.subscribeMessage<StateChangedEvent>(
-      (event) => {
-        const newState = event.data?.new_state;
-        if (newState) {
-          const oldState = event.data.old_state;
-          const oldVal = oldState?.state ?? "n/a";
-          const newVal = newState.state;
-          debugLog("state", newState.entity_id, `${oldVal} -> ${newVal}`);
-
-          this.states.set(newState.entity_id, newState);
-          this.forceViz?.updateStates(this.states);
-          this.forceViz?.onEntityChanged(newState.entity_id, oldVal);
-        }
-      },
-      { type: "subscribe_events", event_type: "state_changed" }
-    );
-
-    connection
-      .sendMessagePromise<HaState[]>({ type: "get_states" })
-      .then((stateList) => {
-        for (const state of stateList) {
-          this.states.set(state.entity_id, state);
-        }
-        this.forceViz?.updateStates(this.states);
-        debugLog("system", `Received ${stateList.length} initial states`);
-      });
   }
 }
 

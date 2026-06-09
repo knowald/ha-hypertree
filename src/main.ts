@@ -5,12 +5,16 @@ import { buildTree, flattenTree } from "./tree/build";
 import type { HaState } from "./ha/types";
 import type { Connection } from "home-assistant-js-websocket";
 import { initDebugConsole, debugLog } from "./debug";
-
-import { getRootElement } from "./rootElement";
+import { subscribeToStates, fetchAllStates, watchConnection } from "./ha/states";
+import { showStatusBar, removeStatusBar, setStatusDisconnected } from "./statusBar";
 import { createForceViz } from "./viz/force";
 
 const loginContainer = document.getElementById("login")!;
 const treeContainer = document.getElementById("tree")!;
+
+let activeConnection: Connection | null = null;
+let teardownSession: (() => void) | null = null;
+let connectInFlight = false;
 
 initDebugConsole();
 
@@ -26,6 +30,9 @@ if (savedCreds) {
 }
 
 async function handleLogin(creds: LoginCredentials, autoConnect = false) {
+  if (connectInFlight) return;
+  connectInFlight = true;
+
   if (!autoConnect) {
     const button = loginContainer.querySelector("button") as HTMLButtonElement;
     button.disabled = true;
@@ -34,6 +41,8 @@ async function handleLogin(creds: LoginCredentials, autoConnect = false) {
 
   try {
     const connection = await connect(creds.url, creds.token);
+    activeConnection?.close();
+    activeConnection = connection;
     loginContainer.hidden = true;
 
     treeContainer.hidden = false;
@@ -57,6 +66,8 @@ async function handleLogin(creds: LoginCredentials, autoConnect = false) {
       button.textContent = "Connect";
       showLoginError(loginContainer, message);
     }
+  } finally {
+    connectInFlight = false;
   }
 }
 
@@ -71,8 +82,14 @@ async function initTree(connection: Connection) {
   const states = new Map<string, HaState>();
 
   const forceViz = createForceViz(registries, undefined, connection, (creds) => {
-    treeContainer.innerHTML = "";
-    handleLogin(creds);
+    teardownSession?.();
+    teardownSession = null;
+    activeConnection?.close();
+    activeConnection = null;
+    treeContainer.innerHTML = `<div class="loading"><div class="spinner"></div><span>Connecting...</span></div>`;
+    // autoConnect mode recovers to the login form on failure; the regular
+    // path would try to update a login button that is not on screen here.
+    handleLogin(creds, true);
   });
 
   const vizContainer = document.createElement("div");
@@ -80,53 +97,33 @@ async function initTree(connection: Connection) {
   treeContainer.appendChild(vizContainer);
   forceViz.create(vizContainer, root, states);
 
-  subscribeToStates(connection, states, forceViz);
+  const unsubscribeStates = subscribeToStates(connection, states, forceViz);
+  const unwatchConnection = watchConnection(connection, {
+    onDisconnected: () => setStatusDisconnected(true),
+    onReady: () => {
+      setStatusDisconnected(false);
+      fetchAllStates(connection, states, forceViz);
+    },
+    onAuthFailed: () => {
+      connection.close();
+      if (activeConnection === connection) activeConnection = null;
+      teardownSession?.();
+      teardownSession = null;
+      treeContainer.hidden = true;
+      treeContainer.innerHTML = "";
+      loginContainer.hidden = false;
+      renderLoginForm(loginContainer, handleLogin);
+      showLoginError(loginContainer, "Authentication failed, please log in again");
+    },
+  });
+
+  teardownSession = () => {
+    unsubscribeStates();
+    unwatchConnection();
+    forceViz.destroy();
+    removeStatusBar();
+  };
 
   debugLog("system", `Loaded ${nodes.length} nodes across ${registries.areas.length} areas`);
-
-  const statusEl = document.createElement("div");
-  statusEl.id = "status";
-  statusEl.textContent = `${nodes.length} nodes | ${registries.areas.length} areas`;
-  getRootElement().appendChild(statusEl);
-}
-
-interface StateChangedEvent {
-  data: {
-    entity_id: string;
-    old_state: HaState | null;
-    new_state: HaState | null;
-  };
-}
-
-function subscribeToStates(
-  connection: Connection,
-  states: Map<string, HaState>,
-  forceViz: { updateStates(s: Map<string, HaState>): void; onEntityChanged(id: string, oldValue?: string): void }
-) {
-  connection.subscribeMessage<StateChangedEvent>(
-    (event) => {
-      const newState = event.data?.new_state;
-      if (newState) {
-        const oldState = event.data.old_state;
-        const oldVal = oldState?.state ?? "n/a";
-        const newVal = newState.state;
-        debugLog("state", newState.entity_id, `${oldVal} -> ${newVal}`);
-
-        states.set(newState.entity_id, newState);
-        forceViz.updateStates(states);
-        forceViz.onEntityChanged(newState.entity_id, oldVal);
-      }
-    },
-    { type: "subscribe_events", event_type: "state_changed" }
-  );
-
-  connection
-    .sendMessagePromise<HaState[]>({ type: "get_states" })
-    .then((stateList) => {
-      for (const state of stateList) {
-        states.set(state.entity_id, state);
-      }
-      forceViz.updateStates(states);
-      debugLog("system", `Received ${stateList.length} initial states`);
-    });
+  showStatusBar(`${nodes.length} nodes | ${registries.areas.length} areas`);
 }
