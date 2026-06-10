@@ -109,6 +109,47 @@ function invalidateSpriteCache(): void {
   }
 }
 
+let centroidCache: { x: number; y: number }[] | null = null;
+let centroidEdgeCache: [number, number][] = [];
+let centroidCacheClusters: Cluster[] | null = null;
+
+const FONT_FAMILY = "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
+
+// Cache measureText results, which are costly per label per frame. Metrics do
+// NOT scale linearly with font size on macOS (San Francisco applies
+// size-dependent tracking), so quantize the size into the key and measure at
+// that size; re-measuring then only happens while the zoom level changes.
+interface LabelMetrics {
+  width: number;
+  ascent: number;
+  descent: number;
+}
+const labelMetricsCache = new Map<string, LabelMetrics>();
+
+// Webfonts (Roboto in the HA panel) may activate after the first frame;
+// metrics measured against the fallback font would stay wrong forever.
+document.fonts?.ready.then(() => labelMetricsCache.clear());
+
+function measureLabel(ctx: CanvasRenderingContext2D, label: string, weight: number, fontSize: number): LabelMetrics {
+  const bucket = Math.max(0.25, Math.round(fontSize * 4) / 4);
+  const key = `${weight}|${bucket}|${label}`;
+  let cached = labelMetricsCache.get(key);
+  if (!cached) {
+    if (labelMetricsCache.size > 20000) labelMetricsCache.clear();
+    const previousFont = ctx.font;
+    ctx.font = `${weight} ${bucket}px ${FONT_FAMILY}`;
+    const m = ctx.measureText(label);
+    cached = {
+      width: m.width,
+      ascent: m.actualBoundingBoxAscent,
+      descent: m.actualBoundingBoxDescent,
+    };
+    labelMetricsCache.set(key, cached);
+    ctx.font = previousFont;
+  }
+  return cached;
+}
+
 interface StarSprite {
   halo: OffscreenCanvas;
   core: OffscreenCanvas;
@@ -275,6 +316,9 @@ export function createForceViz(registries: Registries, haUrl?: string, connectio
       clusters = [];
       entityNodeMap = new Map();
       glowTimestamps = new Map();
+      pulseWaveFields.clear();
+      centroidCache = null;
+      labelMetricsCache.clear();
       automationEdges = [];
       automationEdgesByEntity = new Map();
       automationLoaded = false;
@@ -440,6 +484,7 @@ function insertRevealedNode(nodeId: string, skipGlow = false): void {
   fnodes.push(fn);
   childFNodes.set(fn, []);
   if (treeNode.entityId) entityNodeMap.set(treeNode.entityId, fn);
+  pulseWaveFields.clear();
 
   if (!skipGlow) glowTimestamps.set(fn, performance.now());
   alpha = Math.max(alpha, 0.3);
@@ -488,8 +533,10 @@ function toggleCollapse(fnode: FNode): void {
     fnodes = fnodes.filter((fn) => !toRemove.has(fn));
     fedges = fedges.filter((e) => !toRemove.has(e.source) && !toRemove.has(e.target));
     childFNodes.set(fnode, []);
+    for (const fn of toRemove) glowTimestamps.delete(fn);
   }
 
+  pulseWaveFields.clear();
   alpha = Math.max(alpha, 0.3);
   ensureLoop();
 }
@@ -1730,6 +1777,8 @@ function buildGraph(root: TreeNode): void {
   }
 
   glowTimestamps = new Map();
+  pulseWaveFields.clear();
+  centroidCache = null;
   rebuildClusters();
 
   if (settings.initialLayout === "tree") {
@@ -2003,7 +2052,6 @@ function drawHull(ctx: CanvasRenderingContext2D, cluster: Cluster): void {
 }
 
 function drawLabels(ctx: CanvasRenderingContext2D): void {
-  const fontFamily = "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
   const entityFontSize = settings.labelSize / transform.k;
   const parentFontSize = (settings.labelSize * 1.4) / transform.k;
   const pad = 3 / transform.k;
@@ -2034,21 +2082,29 @@ function drawLabels(ctx: CanvasRenderingContext2D): void {
     const middleRadius = 3;
     const middleGap = 2;
 
+    let fontSize: number;
+    let weight: number;
     if (kind === "root") {
-      ctx.font = `700 ${parentFontSize * 1.2}px ${fontFamily}`;
+      fontSize = parentFontSize * 1.2;
+      weight = 700;
     } else if (isArea) {
-      ctx.font = `600 ${parentFontSize}px ${fontFamily}`;
+      fontSize = parentFontSize;
+      weight = 600;
     } else if (isMiddle) {
-      ctx.font = `500 ${middleFontSize}px ${fontFamily}`;
+      fontSize = middleFontSize;
+      weight = 500;
     } else {
-      ctx.font = `${entityFontSize}px ${fontFamily}`;
+      fontSize = entityFontSize;
+      weight = 400;
     }
+    ctx.font = `${weight} ${fontSize}px ${FONT_FAMILY}`;
 
     const gap = isMiddle ? middleGap : 2 / transform.k;
     const labelY = n.y + n.r + gap;
-    const metrics = ctx.measureText(n.tree.label);
-    const ascent = metrics.actualBoundingBoxAscent;
-    const descent = metrics.actualBoundingBoxDescent;
+    const metrics = measureLabel(ctx, n.tree.label, weight, fontSize);
+    const textWidth = metrics.width;
+    const ascent = metrics.ascent;
+    const descent = metrics.descent;
     const textH = ascent + descent;
     const textY = labelY + ascent;
     const labelPad = isMiddle ? middlePad : pad;
@@ -2084,9 +2140,9 @@ function drawLabels(ctx: CanvasRenderingContext2D): void {
       ctx.fillStyle = "#000000";
       ctx.beginPath();
       ctx.roundRect(
-        n.x - metrics.width / 2 - labelPad,
+        n.x - textWidth / 2 - labelPad,
         textY - ascent - labelPad,
-        metrics.width + labelPad * 2,
+        textWidth + labelPad * 2,
         textH + labelPad * 2,
         labelRadius
       );
@@ -2284,31 +2340,44 @@ function drawConstellation(ctx: CanvasRenderingContext2D, now: number): void {
   }
 
   if (clusters.length > 1) {
-    const centroids: { x: number; y: number; c: Cluster }[] = [];
-    for (const cluster of clusters) {
-      let cx = 0, cy = 0;
-      for (const fn of cluster.nodes) { cx += fn.x; cy += fn.y; }
-      cx /= cluster.nodes.length;
-      cy /= cluster.nodes.length;
-      centroids.push({ x: cx, y: cy, c: cluster });
+    // Positions only change while the simulation runs or a node is dragged,
+    // yet the constellation renders every frame; reuse centroids otherwise.
+    const positionsMoving = alpha > 0.001 || dragNode !== null || pendingReveals.length > 0;
+    if (!centroidCache || positionsMoving || centroidCacheClusters !== clusters) {
+      const centroids: { x: number; y: number }[] = [];
+      for (const cluster of clusters) {
+        let cx = 0, cy = 0;
+        for (const fn of cluster.nodes) { cx += fn.x; cy += fn.y; }
+        cx /= cluster.nodes.length;
+        cy /= cluster.nodes.length;
+        centroids.push({ x: cx, y: cy });
+      }
+
+      const pairs: [number, number][] = [];
+      for (let i = 0; i < centroids.length; i++) {
+        const a = centroids[i];
+        let closestDist = Infinity;
+        let closestIdx = -1;
+        for (let j = 0; j < centroids.length; j++) {
+          if (i === j) continue;
+          const dx = a.x - centroids[j].x;
+          const dy = a.y - centroids[j].y;
+          const d = dx * dx + dy * dy;
+          if (d < closestDist) { closestDist = d; closestIdx = j; }
+        }
+        if (closestIdx > i) pairs.push([i, closestIdx]);
+      }
+
+      centroidCache = centroids;
+      centroidEdgeCache = pairs;
+      centroidCacheClusters = clusters;
     }
 
     ctx.setLineDash([4 * invK, 6 * invK]);
-    for (let i = 0; i < centroids.length; i++) {
-      const a = centroids[i];
-      let closestDist = Infinity;
-      let closestIdx = -1;
-      for (let j = 0; j < centroids.length; j++) {
-        if (i === j) continue;
-        const dx = a.x - centroids[j].x;
-        const dy = a.y - centroids[j].y;
-        const d = dx * dx + dy * dy;
-        if (d < closestDist) { closestDist = d; closestIdx = j; }
-      }
-      if (closestIdx > i) {
-        drawGlowLine(ctx, a.x, a.y, centroids[closestIdx].x, centroids[closestIdx].y,
-          "#88aacc", 0.4, 0.4 * invK);
-      }
+    for (const [i, j] of centroidEdgeCache) {
+      const a = centroidCache[i];
+      const b = centroidCache[j];
+      drawGlowLine(ctx, a.x, a.y, b.x, b.y, "#88aacc", 0.4, 0.4 * invK);
     }
     ctx.setLineDash([]);
   }
@@ -2439,7 +2508,10 @@ function drawStarEffects(ctx: CanvasRenderingContext2D, now: number): void {
     }
   }
 
-  for (const fn of expired) glowTimestamps.delete(fn);
+  for (const fn of expired) {
+    glowTimestamps.delete(fn);
+    pulseWaveFields.delete(fn);
+  }
   ctx.globalAlpha = 1;
 }
 
@@ -2560,11 +2632,18 @@ function drawFlare(ctx: CanvasRenderingContext2D, fn: FNode, t: number, nodeCol:
   }
 }
 
-function drawPulseWave(ctx: CanvasRenderingContext2D, fn: FNode, t: number, nodeCol: string, ss: number): void {
-  const waveFront = t * 6;
-  const visited = new Map<FNode, number>();
+// The wave's BFS field depends only on graph topology, so compute it once per
+// glow instead of every frame; invalidated on rebuild and node insertion.
+interface PulseWaveField {
+  depths: Map<FNode, number>;
+  edges: { source: FNode; target: FNode; depth: number }[];
+}
+const pulseWaveFields = new Map<FNode, PulseWaveField>();
+
+function computePulseWaveField(fn: FNode): PulseWaveField {
+  const depths = new Map<FNode, number>();
   const queue: { node: FNode; depth: number }[] = [{ node: fn, depth: 0 }];
-  visited.set(fn, 0);
+  depths.set(fn, 0);
 
   while (queue.length > 0) {
     const { node, depth } = queue.shift()!;
@@ -2576,13 +2655,32 @@ function drawPulseWave(ctx: CanvasRenderingContext2D, fn: FNode, t: number, node
     if (parent) neighbors.push(parent);
 
     for (const nb of neighbors) {
-      if (visited.has(nb)) continue;
-      visited.set(nb, depth + 1);
+      if (depths.has(nb)) continue;
+      depths.set(nb, depth + 1);
       queue.push({ node: nb, depth: depth + 1 });
     }
   }
 
-  for (const [node, depth] of visited) {
+  const edges: PulseWaveField["edges"] = [];
+  for (const e of fedges) {
+    const sd = depths.get(e.source);
+    const td = depths.get(e.target);
+    if (sd === undefined || td === undefined) continue;
+    edges.push({ source: e.source, target: e.target, depth: Math.min(sd, td) });
+  }
+
+  return { depths, edges };
+}
+
+function drawPulseWave(ctx: CanvasRenderingContext2D, fn: FNode, t: number, nodeCol: string, ss: number): void {
+  const waveFront = t * 6;
+  let field = pulseWaveFields.get(fn);
+  if (!field) {
+    field = computePulseWaveField(fn);
+    pulseWaveFields.set(fn, field);
+  }
+
+  for (const [node, depth] of field.depths) {
     const waveHit = depth / waveFront;
     if (waveHit > 1) continue;
     const fadeIn = Math.max(0, 1 - Math.abs(waveHit - 0.5) * 2);
@@ -2604,12 +2702,8 @@ function drawPulseWave(ctx: CanvasRenderingContext2D, fn: FNode, t: number, node
     ctx.fill();
   }
 
-  for (const e of fedges) {
-    const sd = visited.get(e.source);
-    const td = visited.get(e.target);
-    if (sd === undefined || td === undefined) continue;
-    const edgeDepth = Math.min(sd, td);
-    const waveHit = edgeDepth / waveFront;
+  for (const e of field.edges) {
+    const waveHit = e.depth / waveFront;
     if (waveHit > 1) continue;
     const fadeIn = Math.max(0, 1 - Math.abs(waveHit - 0.5) * 2);
     const fade = fadeIn * (1 - t);

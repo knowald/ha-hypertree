@@ -2,6 +2,10 @@
 
 ## 0.12.1 - 2026-06-10
 
+### Changed
+
+- Cache label text metrics, constellation centroid lines, and pulse-wave fields between frames to cut per-frame canvas work
+
 ### Fixed
 
 - Show a red disconnect notice in the status bar while the WebSocket is down and resync all states once it reconnects; previously live updates silently stopped after a connection drop
