@@ -10,6 +10,10 @@ import { loadCredentials, saveCredentials } from "../login";
 import { getRootElement } from "../rootElement";
 import { updateFps, debugLog } from "../debug";
 import { fetchAutomationEdges, type AutomationEdge, type AutomationRelation } from "../ha/automation";
+import {
+  settings, saveSettings, applySettings,
+  type StarEffect, type UnavailableMode, type InitialLayout, type GroupMode, type StructureMode,
+} from "./settings";
 
 interface FNode {
   tree: TreeNode;
@@ -33,8 +37,6 @@ interface FEdge {
   target: FNode;
 }
 
-type GroupMode = "area" | "domain";
-type StructureMode = "domain" | "device";
 
 let canvas: HTMLCanvasElement | null = null;
 let glassLabels: HTMLDivElement[] = [];
@@ -60,153 +62,6 @@ let panning = false;
 let panStartX = 0, panStartY = 0;
 let transform: ZoomTransform = createTransform();
 
-const SETTINGS_KEY = "ha-hypertree-force-settings";
-
-interface ForceSettings {
-  showHulls: boolean;
-  showLabels: boolean;
-  showStructureLabels: boolean;
-  showIcons: boolean;
-  showEntities: boolean;
-  showAutomationEdges: boolean;
-  unavailableMode: UnavailableMode;
-  changedOnly: boolean;
-  constellation: boolean;
-  groupBy: GroupMode;
-  structureMode: StructureMode;
-  starSize: number;
-  glowIntensity: number;
-  parentGlowIntensity: number;
-  effectScale: number;
-  twinkleSpeed: number;
-  twinkleSize: number;
-  twinkleMin: number;
-  haloFalloff: number;
-  lineGlow: number;
-  glowBrightness: number;
-  glowSize: number;
-  starEffect: StarEffect;
-  labelSize: number;
-  entityDotSize: number;
-  entityLabelZoom: number;
-  repulsion: number;
-  springLen: number;
-  springK: number;
-  damping: number;
-  automationOnly: boolean;
-  appearOnChange: boolean;
-  backgroundColor: string;
-  initialLayout: InitialLayout;
-  hiddenDomains: string[];
-  hiddenAreas: string[];
-  stateFilter: string;
-  searchAsFilter: boolean;
-}
-
-type StarEffect = "supernova" | "shooting-star" | "flare" | "pulse-wave" | "color-shift";
-type UnavailableMode = "normal" | "pulse" | "ring" | "hidden" | "only";
-type InitialLayout = "tree" | "scatter";
-const defaults: ForceSettings = {
-  showHulls: false,
-  showLabels: true,
-  showStructureLabels: true,
-  showIcons: true,
-  showEntities: true,
-  showAutomationEdges: false,
-  unavailableMode: "ring",
-  changedOnly: true,
-  constellation: true,
-  groupBy: "area",
-  structureMode: "domain",
-  starSize: 1.4,
-  glowIntensity: 0.6,
-  parentGlowIntensity: 0.2,
-  effectScale: 1.1,
-  twinkleSpeed: 0,
-  twinkleSize: 0.2,
-  twinkleMin: 0.5,
-  haloFalloff: 1,
-  lineGlow: 0.7,
-  glowBrightness: 0.7,
-  glowSize: 14,
-  starEffect: "supernova",
-  labelSize: 16,
-  entityDotSize: 16,
-  entityLabelZoom: 2.5,
-  repulsion: 3000,
-  springLen: 64,
-  springK: 0.035,
-  damping: 0.8,
-  automationOnly: false,
-  backgroundColor: "#000000",
-  appearOnChange: false,
-  initialLayout: "tree",
-  hiddenDomains: [],
-  hiddenAreas: [],
-  stateFilter: "",
-  searchAsFilter: false,
-};
-
-function loadSettings(): ForceSettings {
-  try {
-    const raw = localStorage.getItem(SETTINGS_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      // Migrate old boolean pulseUnavailable to unavailableMode
-      if ("pulseUnavailable" in parsed && !("unavailableMode" in parsed)) {
-        parsed.unavailableMode = parsed.pulseUnavailable ? "pulse" : "normal";
-        delete parsed.pulseUnavailable;
-      }
-      return { ...defaults, ...parsed };
-    }
-  } catch { /* ignore */ }
-  return { ...defaults };
-}
-
-function saveSettings(): void {
-  const s: ForceSettings = {
-    showHulls, showLabels, showStructureLabels, showIcons, showEntities, showAutomationEdges, unavailableMode, changedOnly, constellation, groupBy, structureMode,
-    starSize, glowIntensity, twinkleSpeed, twinkleSize, twinkleMin, haloFalloff, lineGlow, glowBrightness, glowSize,
-    starEffect, parentGlowIntensity, effectScale,
-    labelSize, entityDotSize, entityLabelZoom,
-    repulsion, springLen, springK, damping,
-    automationOnly, appearOnChange, backgroundColor, initialLayout,
-    hiddenDomains, hiddenAreas, stateFilter, searchAsFilter,
-  };
-  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* ignore */ }
-}
-
-const saved = loadSettings();
-let showHulls = saved.showHulls;
-let showLabels = saved.showLabels;
-let showStructureLabels = saved.showStructureLabels;
-let showIcons = saved.showIcons;
-let showEntities = saved.showEntities;
-let showAutomationEdges = saved.showAutomationEdges;
-let unavailableMode: UnavailableMode = saved.unavailableMode;
-let changedOnly = saved.changedOnly;
-let constellation = saved.constellation;
-let groupBy: GroupMode = saved.groupBy;
-let structureMode: StructureMode = saved.structureMode;
-
-let starSize = saved.starSize;
-let glowIntensity = saved.glowIntensity;
-let parentGlowIntensity = saved.parentGlowIntensity;
-let effectScale = saved.effectScale;
-let twinkleSpeed = saved.twinkleSpeed;
-let twinkleSize = saved.twinkleSize;
-let twinkleMin = saved.twinkleMin;
-let haloFalloff = saved.haloFalloff;
-let lineGlow = saved.lineGlow;
-let glowBrightness = saved.glowBrightness;
-let glowSize = saved.glowSize;
-
-let starEffect: StarEffect = saved.starEffect;
-
-let labelSize = saved.labelSize;
-let entityDotSize = saved.entityDotSize;
-let entityLabelZoom = saved.entityLabelZoom;
-
 let hoveredNode: FNode | null = null;
 let hoverStartTime = 0;
 let searchQuery = "";
@@ -216,21 +71,9 @@ let contextMenuDismiss: ((ev: MouseEvent) => void) | null = null;
 let contextMenuDismissTimer: number | null = null;
 let onMouseLeave: (() => void) | null = null;
 
-let repulsion = saved.repulsion;
-let springLen = saved.springLen;
-let springK = saved.springK;
-let damping = saved.damping;
 let alphaDecay = 0.998;
 let alpha = 1;
 
-let automationOnly = saved.automationOnly;
-let appearOnChange = saved.appearOnChange;
-let backgroundColor = saved.backgroundColor;
-let initialLayout: InitialLayout = saved.initialLayout;
-let hiddenDomains: string[] = saved.hiddenDomains;
-let hiddenAreas: string[] = saved.hiddenAreas;
-let stateFilter = saved.stateFilter;
-let searchAsFilter = saved.searchAsFilter;
 let revealedNodes: Set<string> = new Set();
 let stateChangeCounts: Map<string, number> = new Map();
 let allTreeNodesById: Map<string, TreeNode> = new Map();
@@ -254,7 +97,7 @@ let spriteCacheVersion = 0;
 let lastSpriteParams = "";
 
 function getSpriteParams(): string {
-  return `${glowIntensity}|${parentGlowIntensity}`;
+  return `${settings.glowIntensity}|${settings.parentGlowIntensity}`;
 }
 
 function invalidateSpriteCache(): void {
@@ -273,7 +116,7 @@ interface StarSprite {
 }
 
 function getStarSprite(nodeCol: string, intensity: number): StarSprite {
-  const key = `${nodeCol}|${intensity}|${haloFalloff}|${spriteCacheVersion}`;
+  const key = `${nodeCol}|${intensity}|${settings.haloFalloff}|${spriteCacheVersion}`;
   const cached = spriteCache.get(key);
   if (cached) return cached;
 
@@ -287,7 +130,7 @@ function getStarSprite(nodeCol: string, intensity: number): StarSprite {
   const haloCanvas = new OffscreenCanvas(spritePixels, spritePixels);
   const hctx = haloCanvas.getContext("2d")!;
 
-  const sigma = 0.15 + 0.55 * haloFalloff;
+  const sigma = 0.15 + 0.55 * settings.haloFalloff;
   const baseline = Math.exp(-(1 / sigma) * (1 / sigma));
   const norm = 1 / (1 - baseline);
   const stops = 12;
@@ -386,12 +229,12 @@ export function createForceViz(registries: Registries, haUrl?: string, connectio
       obs.observe(container);
       (canvas as any).__obs = obs;
 
-      const root = structureMode === "device"
+      const root = settings.structureMode === "device"
         ? buildTreeByDevice(registries)
         : buildTree(registries);
       buildGraph(root);
       resize();
-      if (showAutomationEdges || automationOnly) loadAutomationEdges();
+      if (settings.showAutomationEdges || settings.automationOnly) loadAutomationEdges();
 
       setIconResolveCallback(() => ensureLoop());
 
@@ -457,13 +300,13 @@ export function createForceViz(registries: Registries, haUrl?: string, connectio
     onEntityChanged(entityId: string, oldValue?: string) {
       stateChangeCounts.set(entityId, (stateChangeCounts.get(entityId) ?? 0) + 1);
 
-      if (appearOnChange && allEntityTreeNodes.has(entityId)) {
-        if (!automationOnly || automationEdgesByEntity.has(entityId)) {
+      if (settings.appearOnChange && allEntityTreeNodes.has(entityId)) {
+        if (!settings.automationOnly || automationEdgesByEntity.has(entityId)) {
           revealAncestorChain(entityId);
         }
       }
 
-      if (changedOnly && oldValue !== undefined) {
+      if (settings.changedOnly && oldValue !== undefined) {
         const current = currentStates.get(entityId);
         if (current && current.state === oldValue) return;
       }
@@ -479,7 +322,7 @@ export function createForceViz(registries: Registries, haUrl?: string, connectio
 function rebuildGraph(): void {
   if (!currentRegistries || !canvas) return;
 
-  const root = structureMode === "device"
+  const root = settings.structureMode === "device"
     ? buildTreeByDevice(currentRegistries)
     : buildTree(currentRegistries);
 
@@ -493,7 +336,7 @@ function rebuildWithStructure(): void {
   automationLoaded = false;
   automationEdges = [];
   automationEdgesByEntity = new Map();
-  if (showAutomationEdges || automationOnly) loadAutomationEdges();
+  if (settings.showAutomationEdges || settings.automationOnly) loadAutomationEdges();
 }
 
 const REVEAL_STAGGER_MS = 120;
@@ -561,7 +404,7 @@ function insertRevealedNode(nodeId: string, skipGlow = false): void {
 
   const r = treeNode.kind === "area" ? 8
     : (treeNode.kind === "domain" || treeNode.kind === "device") ? 6
-      : entityDotSize;
+      : settings.entityDotSize;
 
   let hash = 0;
   for (let i = 0; i < treeNode.id.length; i++) hash = ((hash << 5) - hash + treeNode.id.charCodeAt(i)) | 0;
@@ -715,7 +558,7 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   searchInput.addEventListener("input", () => {
     searchQuery = searchInput.value.toLowerCase();
-    if (searchAsFilter) {
+    if (settings.searchAsFilter) {
       if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
       searchDebounceTimer = setTimeout(() => rebuildGraph(), 150);
     } else {
@@ -836,27 +679,27 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   }
 
   function syncSettingsState(): void {
-    const entitiesOff = !showEntities;
-    const aocOn = appearOnChange;
+    const entitiesOff = !settings.showEntities;
+    const aocOn = settings.appearOnChange;
     setDisabled(entitiesToggle, aocOn);
     setDisabled(unavailableSelect, entitiesOff || aocOn);
     setDisabled(changedOnlyToggle, entitiesOff);
     setDisabled(appearOnChangeToggle, entitiesOff);
-    setDisabled(autoOnlyToggle, entitiesOff || !automationLoaded || !showAutomationEdges);
+    setDisabled(autoOnlyToggle, entitiesOff || !automationLoaded || !settings.showAutomationEdges);
   }
 
   // =====================
   // VIEW TAB
   // =====================
 
-  viewTab.appendChild(makeSegmented("Structure", ["domain", "device"], structureMode, (v) => {
-    structureMode = v as StructureMode;
+  viewTab.appendChild(makeSegmented("Structure", ["domain", "device"], settings.structureMode, (v) => {
+    settings.structureMode = v as StructureMode;
     rebuildWithStructure();
     saveSettings();
   }));
 
-  viewTab.appendChild(makeSegmented("Layout", ["tree", "scatter"], initialLayout, (v) => {
-    initialLayout = v as InitialLayout;
+  viewTab.appendChild(makeSegmented("Layout", ["tree", "scatter"], settings.initialLayout, (v) => {
+    settings.initialLayout = v as InitialLayout;
     rebuildGraph();
     saveSettings();
   }, "Initial node positions: tree (structured) or scatter (random)"));
@@ -865,7 +708,7 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   const visualModeGroup = document.createElement("div");
   visualModeGroup.className = "visual-mode-group";
 
-  const currentVisualMode = showAutomationEdges ? "automations" : constellation ? "constellation" : showHulls ? "hulls" : "default";
+  const currentVisualMode = settings.showAutomationEdges ? "automations" : settings.constellation ? "constellation" : settings.showHulls ? "hulls" : "default";
   const visualModes = ["default", "constellation", "hulls", "automations"] as const;
 
   const constellationSubOptions = document.createElement("div");
@@ -879,15 +722,15 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   automationSubOptions.hidden = currentVisualMode !== "automations";
 
   function applyVisualMode(mode: string): void {
-    constellation = mode === "constellation";
-    showHulls = mode === "hulls";
-    showAutomationEdges = mode === "automations";
+    settings.constellation = mode === "constellation";
+    settings.showHulls = mode === "hulls";
+    settings.showAutomationEdges = mode === "automations";
     constellationSubOptions.hidden = mode !== "constellation";
     hullSubOptions.hidden = mode !== "hulls";
     automationSubOptions.hidden = mode !== "automations";
     if (mode === "automations" && !automationLoaded && !automationLoading) loadAutomationEdges();
-    if (mode !== "automations" && automationOnly) {
-      automationOnly = false;
+    if (mode !== "automations" && settings.automationOnly) {
+      settings.automationOnly = false;
       autoOnlyToggle.querySelector("input")!.checked = false;
       rebuildGraph();
     }
@@ -913,28 +756,28 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
     if (mode === "automations") visualModeGroup.appendChild(automationSubOptions);
   }
 
-  constellationSubOptions.appendChild(makeSlider("Brightness", 0, 3, glowBrightness, 0.1, (v) => { glowBrightness = v; saveSettings(); }, "Overall star and edge opacity"));
-  constellationSubOptions.appendChild(makeSlider("Star size", 0.2, 3, starSize, 0.1, (v) => { starSize = v; saveSettings(); }));
-  constellationSubOptions.appendChild(makeSlider("Halo intensity", 0.2, 3, glowIntensity, 0.1, (v) => { glowIntensity = v; saveSettings(); }, "Glow gradient spread and strength"));
-  constellationSubOptions.appendChild(makeSlider("Halo size", 2, 16, glowSize, 0.5, (v) => { glowSize = v; saveSettings(); }, "Base glow radius around stars"));
-  constellationSubOptions.appendChild(makeSlider("Parent halo", 0.2, 5, parentGlowIntensity, 0.1, (v) => { parentGlowIntensity = v; saveSettings(); }, "Halo for area, domain, and device nodes"));
-  constellationSubOptions.appendChild(makeSlider("Effect scale", 0.5, 5, effectScale, 0.1, (v) => { effectScale = v; saveSettings(); }, "Size of state-change effects"));
-  constellationSubOptions.appendChild(makeSlider("Twinkle speed", 0, 5, twinkleSpeed, 0.1, (v) => { twinkleSpeed = v; saveSettings(); }));
-  constellationSubOptions.appendChild(makeSlider("Twinkle size", 0, 1, twinkleSize, 0.05, (v) => { twinkleSize = v; saveSettings(); }, "Halo radius pulsing with twinkle"));
-  constellationSubOptions.appendChild(makeSlider("Twinkle floor", 0, 1, twinkleMin, 0.05, (v) => { twinkleMin = v; saveSettings(); }, "Minimum brightness during twinkle dip"));
-  constellationSubOptions.appendChild(makeSlider("Halo spread", 0, 1, haloFalloff, 0.05, (v) => { haloFalloff = v; saveSettings(); }, "Gaussian halo width: low = tight bright peak, high = broad soft glow"));
+  constellationSubOptions.appendChild(makeSlider("Brightness", 0, 3, settings.glowBrightness, 0.1, (v) => { settings.glowBrightness = v; saveSettings(); }, "Overall star and edge opacity"));
+  constellationSubOptions.appendChild(makeSlider("Star size", 0.2, 3, settings.starSize, 0.1, (v) => { settings.starSize = v; saveSettings(); }));
+  constellationSubOptions.appendChild(makeSlider("Halo intensity", 0.2, 3, settings.glowIntensity, 0.1, (v) => { settings.glowIntensity = v; saveSettings(); }, "Glow gradient spread and strength"));
+  constellationSubOptions.appendChild(makeSlider("Halo size", 2, 16, settings.glowSize, 0.5, (v) => { settings.glowSize = v; saveSettings(); }, "Base glow radius around stars"));
+  constellationSubOptions.appendChild(makeSlider("Parent halo", 0.2, 5, settings.parentGlowIntensity, 0.1, (v) => { settings.parentGlowIntensity = v; saveSettings(); }, "Halo for area, domain, and device nodes"));
+  constellationSubOptions.appendChild(makeSlider("Effect scale", 0.5, 5, settings.effectScale, 0.1, (v) => { settings.effectScale = v; saveSettings(); }, "Size of state-change effects"));
+  constellationSubOptions.appendChild(makeSlider("Twinkle speed", 0, 5, settings.twinkleSpeed, 0.1, (v) => { settings.twinkleSpeed = v; saveSettings(); }));
+  constellationSubOptions.appendChild(makeSlider("Twinkle size", 0, 1, settings.twinkleSize, 0.05, (v) => { settings.twinkleSize = v; saveSettings(); }, "Halo radius pulsing with twinkle"));
+  constellationSubOptions.appendChild(makeSlider("Twinkle floor", 0, 1, settings.twinkleMin, 0.05, (v) => { settings.twinkleMin = v; saveSettings(); }, "Minimum brightness during twinkle dip"));
+  constellationSubOptions.appendChild(makeSlider("Halo spread", 0, 1, settings.haloFalloff, 0.05, (v) => { settings.haloFalloff = v; saveSettings(); }, "Gaussian halo width: low = tight bright peak, high = broad soft glow"));
   constellationSubOptions.appendChild(makeSelect("Effect",
     ["supernova", "shooting-star", "flare", "pulse-wave", "color-shift"],
-    starEffect, (v) => { starEffect = v as StarEffect; saveSettings(); }, "Animation on entity state change"));
+    settings.starEffect, (v) => { settings.starEffect = v as StarEffect; saveSettings(); }, "Animation on entity state change"));
 
-  hullSubOptions.appendChild(makeSegmented("Grouping", ["area", "domain"], groupBy, (v) => {
-    groupBy = v as GroupMode;
+  hullSubOptions.appendChild(makeSegmented("Grouping", ["area", "domain"], settings.groupBy, (v) => {
+    settings.groupBy = v as GroupMode;
     rebuildClusters();
     saveSettings();
   }));
 
-  autoOnlyToggle = makeToggle("Automation entities only", automationOnly, (v) => {
-    automationOnly = v;
+  autoOnlyToggle = makeToggle("Automation entities only", settings.automationOnly, (v) => {
+    settings.automationOnly = v;
     saveSettings();
     if (v && !automationLoaded && !automationLoading) {
       loadAutomationEdges();
@@ -946,25 +789,25 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
 
   onAutomationLoaded = () => {
     syncSettingsState();
-    if (automationOnly) rebuildGraph();
+    if (settings.automationOnly) rebuildGraph();
   };
 
   viewTab.appendChild(visualModeGroup);
 
   // -- Entities + sub-options --
-  entitiesToggle = makeToggle("Entities", showEntities, (v) => {
-    showEntities = v;
+  entitiesToggle = makeToggle("Entities", settings.showEntities, (v) => {
+    settings.showEntities = v;
     entitiesSubOptions.hidden = !v;
     if (!v) {
-      if (appearOnChange) {
-        appearOnChange = false;
+      if (settings.appearOnChange) {
+        settings.appearOnChange = false;
         appearOnChangeToggle.querySelector("input")!.checked = false;
         revealedNodes.clear();
         pendingReveals = [];
         if (revealTimer) { clearTimeout(revealTimer); revealTimer = null; }
       }
-      if (automationOnly) {
-        automationOnly = false;
+      if (settings.automationOnly) {
+        settings.automationOnly = false;
         autoOnlyToggle.querySelector("input")!.checked = false;
       }
     }
@@ -976,21 +819,21 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
 
   const entitiesSubOptions = document.createElement("div");
   entitiesSubOptions.className = "force-sub-options";
-  entitiesSubOptions.hidden = !showEntities;
+  entitiesSubOptions.hidden = !settings.showEntities;
 
-  unavailableSelect = makeSelect("Unavailable", ["normal", "pulse", "ring", "hidden", "only"], unavailableMode, (v) => {
-    const prev = unavailableMode;
-    unavailableMode = v as UnavailableMode;
+  unavailableSelect = makeSelect("Unavailable", ["normal", "pulse", "ring", "hidden", "only"], settings.unavailableMode, (v) => {
+    const prev = settings.unavailableMode;
+    settings.unavailableMode = v as UnavailableMode;
     if (v === "hidden" || prev === "hidden" || v === "only" || prev === "only") rebuildGraph();
     ensureLoop();
     saveSettings();
   });
   entitiesSubOptions.appendChild(unavailableSelect);
 
-  appearOnChangeToggle = makeToggle("Appear on change", appearOnChange, (v) => {
-    appearOnChange = v;
+  appearOnChangeToggle = makeToggle("Appear on change", settings.appearOnChange, (v) => {
+    settings.appearOnChange = v;
     if (v) {
-      showEntities = true;
+      settings.showEntities = true;
       entitiesToggle.querySelector("input")!.checked = true;
     } else {
       revealedNodes.clear();
@@ -1010,8 +853,8 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   filterPanel.appendChild(filterBody);
 
   // Search as filter toggle
-  filterBody.appendChild(makeToggle("Search hides non-matching", searchAsFilter, (v) => {
-    searchAsFilter = v;
+  filterBody.appendChild(makeToggle("Search hides non-matching", settings.searchAsFilter, (v) => {
+    settings.searchAsFilter = v;
     saveSettings();
     if (searchQuery) rebuildGraph();
   }, "When enabled, the search bar hides nodes instead of highlighting them"));
@@ -1045,12 +888,12 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
     item.className = "filter-item";
     const cb = document.createElement("input");
     cb.type = "checkbox";
-    cb.checked = !hiddenDomains.includes(d);
+    cb.checked = !settings.hiddenDomains.includes(d);
     cb.addEventListener("change", () => {
       if (cb.checked) {
-        hiddenDomains = hiddenDomains.filter((x) => x !== d);
+        settings.hiddenDomains = settings.hiddenDomains.filter((x) => x !== d);
       } else {
-        hiddenDomains = [...hiddenDomains, d];
+        settings.hiddenDomains = [...settings.hiddenDomains, d];
       }
       saveSettings();
       rebuildGraph();
@@ -1065,13 +908,13 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   }
 
   domainAllBtn.addEventListener("click", () => {
-    hiddenDomains = [];
+    settings.hiddenDomains = [];
     for (const { checkbox } of domainCheckboxes) checkbox.checked = true;
     saveSettings();
     rebuildGraph();
   });
   domainNoneBtn.addEventListener("click", () => {
-    hiddenDomains = domains.slice();
+    settings.hiddenDomains = domains.slice();
     for (const { checkbox } of domainCheckboxes) checkbox.checked = false;
     saveSettings();
     rebuildGraph();
@@ -1099,7 +942,7 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   areaGrid.className = "filter-grid";
   areaSection.body.appendChild(areaGrid);
 
-  const filterRoot = structureMode === "device"
+  const filterRoot = settings.structureMode === "device"
     ? buildTreeByDevice(currentRegistries!)
     : buildTree(currentRegistries!);
   const areas = filterRoot.children.filter((c) => c.kind === "area").sort((a, b) => a.label.localeCompare(b.label));
@@ -1111,12 +954,12 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
     item.className = "filter-item";
     const cb = document.createElement("input");
     cb.type = "checkbox";
-    cb.checked = !hiddenAreas.includes(areaId);
+    cb.checked = !settings.hiddenAreas.includes(areaId);
     cb.addEventListener("change", () => {
       if (cb.checked) {
-        hiddenAreas = hiddenAreas.filter((x) => x !== areaId);
+        settings.hiddenAreas = settings.hiddenAreas.filter((x) => x !== areaId);
       } else {
-        hiddenAreas = [...hiddenAreas, areaId];
+        settings.hiddenAreas = [...settings.hiddenAreas, areaId];
       }
       saveSettings();
       rebuildGraph();
@@ -1131,13 +974,13 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   }
 
   areaAllBtn.addEventListener("click", () => {
-    hiddenAreas = [];
+    settings.hiddenAreas = [];
     for (const { checkbox } of areaCheckboxes) checkbox.checked = true;
     saveSettings();
     rebuildGraph();
   });
   areaNoneBtn.addEventListener("click", () => {
-    hiddenAreas = areas.map((a) => a.id.replace(/^area:/, ""));
+    settings.hiddenAreas = areas.map((a) => a.id.replace(/^area:/, ""));
     for (const { checkbox } of areaCheckboxes) checkbox.checked = false;
     saveSettings();
     rebuildGraph();
@@ -1153,12 +996,12 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   stateInput.type = "text";
   stateInput.className = "force-search";
   stateInput.placeholder = "Filter by state (e.g. on, off)";
-  stateInput.value = stateFilter;
+  stateInput.value = settings.stateFilter;
   const stateClearBtn = document.createElement("button");
   stateClearBtn.textContent = "\u00d7";
-  stateClearBtn.style.cssText = "position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:0.85rem;padding:0 4px;display:" + (stateFilter ? "block" : "none");
+  stateClearBtn.style.cssText = "position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:0.85rem;padding:0 4px;display:" + (settings.stateFilter ? "block" : "none");
   stateClearBtn.addEventListener("click", () => {
-    stateFilter = "";
+    settings.stateFilter = "";
     stateInput.value = "";
     stateClearBtn.style.display = "none";
     saveSettings();
@@ -1166,8 +1009,8 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   });
   let stateDebounce: ReturnType<typeof setTimeout> | null = null;
   stateInput.addEventListener("input", () => {
-    stateFilter = stateInput.value.trim();
-    stateClearBtn.style.display = stateFilter ? "block" : "none";
+    settings.stateFilter = stateInput.value.trim();
+    stateClearBtn.style.display = settings.stateFilter ? "block" : "none";
     if (stateDebounce) clearTimeout(stateDebounce);
     stateDebounce = setTimeout(() => {
       saveSettings();
@@ -1183,37 +1026,37 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   // STYLE TAB
   // =====================
 
-  styleTab.appendChild(makeToggle("Labels", showLabels, (v) => { showLabels = v; saveSettings(); }));
+  styleTab.appendChild(makeToggle("Labels", settings.showLabels, (v) => { settings.showLabels = v; saveSettings(); }));
   styleTab.appendChild(makeToggle(
     "Structure labels",
-    showStructureLabels,
-    (v) => { showStructureLabels = v; saveSettings(); },
+    settings.showStructureLabels,
+    (v) => { settings.showStructureLabels = v; saveSettings(); },
     "Show labels on grouping nodes (domains in domain mode, devices in device mode)"
   ));
   styleTab.appendChild(makeToggle(
     "Entity icons",
-    showIcons,
-    (v) => { showIcons = v; saveSettings(); },
+    settings.showIcons,
+    (v) => { settings.showIcons = v; saveSettings(); },
     "Render Material Design Icons on entity nodes (resolved from Home Assistant)"
   ));
-  changedOnlyToggle = makeToggle("Skip unchanged", changedOnly, (v) => {
-    changedOnly = v;
+  changedOnlyToggle = makeToggle("Skip unchanged", settings.changedOnly, (v) => {
+    settings.changedOnly = v;
     saveSettings();
   }, "Skip glow when state value hasn't changed");
   styleTab.appendChild(changedOnlyToggle);
 
   syncSettingsState();
 
-  styleTab.appendChild(makeSlider("Label size", 4, 24, labelSize, 1, (v) => { labelSize = v; saveSettings(); }));
-  styleTab.appendChild(makeSlider("Entity label zoom", 0.5, 5, entityLabelZoom, 0.1, (v) => { entityLabelZoom = v; saveSettings(); }, "Zoom level to show entity labels"));
-  styleTab.appendChild(makeSlider("Entity dot size", 1, 16, entityDotSize, 0.5, (v) => {
-    entityDotSize = v;
+  styleTab.appendChild(makeSlider("Label size", 4, 24, settings.labelSize, 1, (v) => { settings.labelSize = v; saveSettings(); }));
+  styleTab.appendChild(makeSlider("Entity label zoom", 0.5, 5, settings.entityLabelZoom, 0.1, (v) => { settings.entityLabelZoom = v; saveSettings(); }, "Zoom level to show entity labels"));
+  styleTab.appendChild(makeSlider("Entity dot size", 1, 16, settings.entityDotSize, 0.5, (v) => {
+    settings.entityDotSize = v;
     for (const fn of fnodes) {
       if (fn.tree.kind === "entity") fn.r = v;
     }
     saveSettings();
   }));
-  styleTab.appendChild(makeSlider("Connection brightness", 0, 3, lineGlow, 0.1, (v) => { lineGlow = v; saveSettings(); }, "Opacity of parent-child connection lines"));
+  styleTab.appendChild(makeSlider("Connection brightness", 0, 3, settings.lineGlow, 0.1, (v) => { settings.lineGlow = v; saveSettings(); }, "Opacity of parent-child connection lines"));
 
   // -- Colors --
   const colorsSection = makeSection("Colors");
@@ -1223,12 +1066,12 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   bgSwatch.title = "Background";
   const bgDot = document.createElement("span");
   bgDot.className = "force-color-dot";
-  bgDot.style.background = backgroundColor;
+  bgDot.style.background = settings.backgroundColor;
   const bgInput = document.createElement("input");
   bgInput.type = "color";
-  bgInput.value = backgroundColor;
+  bgInput.value = settings.backgroundColor;
   bgInput.addEventListener("input", () => {
-    backgroundColor = bgInput.value;
+    settings.backgroundColor = bgInput.value;
     bgDot.style.background = bgInput.value;
     saveSettings();
     ensureLoop();
@@ -1295,10 +1138,10 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
 
   // -- Physics --
   const physicsSection = makeSection("Physics");
-  physicsSection.body.appendChild(makeSlider("Repulsion", 100, 3000, repulsion, 10, (v) => { repulsion = v; reheat(); saveSettings(); }));
-  physicsSection.body.appendChild(makeSlider("Spring length", 10, 120, springLen, 1, (v) => { springLen = v; reheat(); saveSettings(); }));
-  physicsSection.body.appendChild(makeSlider("Spring stiffness", 0.005, 0.15, springK, 0.005, (v) => { springK = v; reheat(); saveSettings(); }, "Pull strength between connected nodes"));
-  physicsSection.body.appendChild(makeSlider("Damping", 0.5, 0.99, damping, 0.01, (v) => { damping = v; reheat(); saveSettings(); }, "Velocity decay per frame"));
+  physicsSection.body.appendChild(makeSlider("Repulsion", 100, 3000, settings.repulsion, 10, (v) => { settings.repulsion = v; reheat(); saveSettings(); }));
+  physicsSection.body.appendChild(makeSlider("Spring length", 10, 120, settings.springLen, 1, (v) => { settings.springLen = v; reheat(); saveSettings(); }));
+  physicsSection.body.appendChild(makeSlider("Spring stiffness", 0.005, 0.15, settings.springK, 0.005, (v) => { settings.springK = v; reheat(); saveSettings(); }, "Pull strength between connected nodes"));
+  physicsSection.body.appendChild(makeSlider("Damping", 0.5, 0.99, settings.damping, 0.01, (v) => { settings.damping = v; reheat(); saveSettings(); }, "Velocity decay per frame"));
   advancedTab.appendChild(physicsSection.el);
 
   // -- Actions --
@@ -1322,45 +1165,7 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   resetAllBtn.addEventListener("click", () => {
     resetColors();
     spriteCache.clear();
-    Object.assign(saved, defaults);
-    showHulls = defaults.showHulls;
-    showLabels = defaults.showLabels;
-    showStructureLabels = defaults.showStructureLabels;
-    showIcons = defaults.showIcons;
-    showEntities = defaults.showEntities;
-    showAutomationEdges = defaults.showAutomationEdges;
-    unavailableMode = defaults.unavailableMode;
-    changedOnly = defaults.changedOnly;
-    constellation = defaults.constellation;
-    groupBy = defaults.groupBy;
-    structureMode = defaults.structureMode;
-    starSize = defaults.starSize;
-    glowIntensity = defaults.glowIntensity;
-    parentGlowIntensity = defaults.parentGlowIntensity;
-    effectScale = defaults.effectScale;
-    twinkleSpeed = defaults.twinkleSpeed;
-    twinkleSize = defaults.twinkleSize;
-    twinkleMin = defaults.twinkleMin;
-    haloFalloff = defaults.haloFalloff;
-    lineGlow = defaults.lineGlow;
-    glowBrightness = defaults.glowBrightness;
-    glowSize = defaults.glowSize;
-    starEffect = defaults.starEffect;
-    labelSize = defaults.labelSize;
-    entityDotSize = defaults.entityDotSize;
-    entityLabelZoom = defaults.entityLabelZoom;
-    repulsion = defaults.repulsion;
-    springLen = defaults.springLen;
-    springK = defaults.springK;
-    damping = defaults.damping;
-    automationOnly = defaults.automationOnly;
-    appearOnChange = defaults.appearOnChange;
-    backgroundColor = defaults.backgroundColor;
-    initialLayout = defaults.initialLayout;
-    hiddenDomains = [];
-    hiddenAreas = [];
-    stateFilter = "";
-    searchAsFilter = false;
+    applySettings({});
     revealedNodes.clear();
     collapsedNodes.clear();
     pendingReveals = [];
@@ -1384,7 +1189,7 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   exportBtn.className = "force-reset-btn";
   exportBtn.textContent = "Export settings";
   exportBtn.addEventListener("click", () => {
-    const data = { settings: loadSettings(), colors: getDomainColors() };
+    const data = { settings, colors: getDomainColors() };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1409,51 +1214,9 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
       file.text().then((text) => {
         try {
           const data = JSON.parse(text);
-          if (data.settings) {
-            const merged = { ...defaults, ...data.settings };
-            localStorage.setItem(SETTINGS_KEY, JSON.stringify(merged));
-          }
+          if (data.settings) applySettings(data.settings);
           if (data.colors) setDomainColors(data.colors);
           spriteCache.clear();
-          const s = loadSettings();
-          showHulls = s.showHulls;
-          showLabels = s.showLabels;
-          showStructureLabels = s.showStructureLabels;
-          showIcons = s.showIcons;
-          showEntities = s.showEntities;
-          showAutomationEdges = s.showAutomationEdges;
-          unavailableMode = s.unavailableMode;
-          changedOnly = s.changedOnly;
-          constellation = s.constellation;
-          groupBy = s.groupBy;
-          structureMode = s.structureMode;
-          starSize = s.starSize;
-          glowIntensity = s.glowIntensity;
-          parentGlowIntensity = s.parentGlowIntensity;
-          effectScale = s.effectScale;
-          twinkleSpeed = s.twinkleSpeed;
-          twinkleSize = s.twinkleSize;
-          twinkleMin = s.twinkleMin;
-          haloFalloff = s.haloFalloff;
-          lineGlow = s.lineGlow;
-          glowBrightness = s.glowBrightness;
-          glowSize = s.glowSize;
-          starEffect = s.starEffect;
-          labelSize = s.labelSize;
-          entityDotSize = s.entityDotSize;
-          entityLabelZoom = s.entityLabelZoom;
-          repulsion = s.repulsion;
-          springLen = s.springLen;
-          springK = s.springK;
-          damping = s.damping;
-          automationOnly = s.automationOnly;
-          appearOnChange = s.appearOnChange;
-          backgroundColor = s.backgroundColor;
-          initialLayout = s.initialLayout;
-          hiddenDomains = s.hiddenDomains;
-          hiddenAreas = s.hiddenAreas;
-          stateFilter = s.stateFilter;
-          searchAsFilter = s.searchAsFilter;
           removeSettings();
           settingsPanel = createSettings(container);
           rebuildWithStructure();
@@ -1610,7 +1373,7 @@ function rebuildClusters(): void {
     let key: string | null = null;
     let groupNode: TreeNode | null = null;
 
-    if (groupBy === "area") {
+    if (settings.groupBy === "area") {
       const area = findAncestor(fn.tree, "area");
       if (area) {
         key = area.id;
@@ -1699,7 +1462,7 @@ async function loadAutomationEdges(): Promise<void> {
 }
 
 function drawAutomationEdges(drawCtx: CanvasRenderingContext2D): void {
-  if (!showAutomationEdges || automationEdges.length === 0) return;
+  if (!settings.showAutomationEdges || automationEdges.length === 0) return;
 
   const invK = 1 / transform.k;
   const hoveredEntityId = hoveredNode?.tree.entityId;
@@ -1811,15 +1574,15 @@ function buildGraph(root: TreeNode): void {
   }
 
   let nodes: TreeNode[];
-  if (!showEntities) {
+  if (!settings.showEntities) {
     nodes = allNodes.filter((n) => n.kind !== "entity");
-  } else if (unavailableMode === "hidden") {
+  } else if (settings.unavailableMode === "hidden") {
     nodes = allNodes.filter((n) => {
       if (n.kind !== "entity" || !n.entityId) return true;
       const state = currentStates.get(n.entityId);
       return !(state && state.state === "unavailable");
     });
-  } else if (unavailableMode === "only") {
+  } else if (settings.unavailableMode === "only") {
     nodes = allNodes.filter((n) => {
       if (n.kind !== "entity") return true;
       if (!n.entityId) return false;
@@ -1830,14 +1593,14 @@ function buildGraph(root: TreeNode): void {
     nodes = allNodes;
   }
 
-  if (appearOnChange) {
+  if (settings.appearOnChange) {
     nodes = nodes.filter((n) => {
       if (n.kind === "root") return true;
       return revealedNodes.has(n.id);
     });
   }
 
-  if (automationOnly) {
+  if (settings.automationOnly) {
     nodes = nodes.filter((n) => {
       if (n.kind !== "entity") return true;
       return n.entityId !== undefined && automationEdgesByEntity.has(n.entityId);
@@ -1845,8 +1608,8 @@ function buildGraph(root: TreeNode): void {
     nodes = pruneEmptyBranches(nodes);
   }
 
-  if (hiddenDomains.length > 0) {
-    const hidden = new Set(hiddenDomains);
+  if (settings.hiddenDomains.length > 0) {
+    const hidden = new Set(settings.hiddenDomains);
     nodes = nodes.filter((n) => {
       if (n.kind !== "entity" || !n.domain) return true;
       return !hidden.has(n.domain);
@@ -1854,8 +1617,8 @@ function buildGraph(root: TreeNode): void {
     nodes = pruneEmptyBranches(nodes);
   }
 
-  if (hiddenAreas.length > 0) {
-    const hidden = new Set(hiddenAreas.map((a) => `area:${a}`));
+  if (settings.hiddenAreas.length > 0) {
+    const hidden = new Set(settings.hiddenAreas.map((a) => `area:${a}`));
     nodes = nodes.filter((n) => {
       if (n.kind === "area") return !hidden.has(n.id);
       let cur = n.parent;
@@ -1868,8 +1631,8 @@ function buildGraph(root: TreeNode): void {
     nodes = pruneEmptyBranches(nodes);
   }
 
-  if (stateFilter !== "") {
-    const filter = stateFilter.toLowerCase();
+  if (settings.stateFilter !== "") {
+    const filter = settings.stateFilter.toLowerCase();
     nodes = nodes.filter((n) => {
       if (n.kind !== "entity" || !n.entityId) return true;
       const state = currentStates.get(n.entityId);
@@ -1878,7 +1641,7 @@ function buildGraph(root: TreeNode): void {
     nodes = pruneEmptyBranches(nodes);
   }
 
-  if (searchAsFilter && searchQuery) {
+  if (settings.searchAsFilter && searchQuery) {
     nodes = nodes.filter((n) => {
       if (n.kind !== "entity") return true;
       const label = n.label.toLowerCase();
@@ -1905,13 +1668,13 @@ function buildGraph(root: TreeNode): void {
 
   // Radial tree layout for initial positions (when layout is "tree")
   const positions = new Map<TreeNode, { x: number; y: number }>();
-  if (initialLayout === "tree") {
+  if (settings.initialLayout === "tree") {
     const nodeSet = new Set(nodes);
     function layoutRadial(node: TreeNode, x: number, y: number, angleStart: number, angleSpan: number, depth: number): void {
       positions.set(node, { x, y });
       const children = node.children.filter((c) => nodeSet.has(c));
       if (children.length === 0) return;
-      const radius = springLen * (depth === 0 ? 1.5 : 1);
+      const radius = settings.springLen * (depth === 0 ? 1.5 : 1);
       let offset = angleStart;
       const totalLeaves = children.reduce((s, c) => s + Math.max(1, c.leafCount), 0);
       for (const child of children) {
@@ -1927,7 +1690,7 @@ function buildGraph(root: TreeNode): void {
 
   fnodes = nodes.map((n) => {
     const r = n.kind === "root" ? 10 : n.kind === "area" ? 8
-      : (n.kind === "domain" || n.kind === "device") ? 6 : entityDotSize;
+      : (n.kind === "domain" || n.kind === "device") ? 6 : settings.entityDotSize;
     let hash = 0;
     for (let i = 0; i < n.id.length; i++) hash = ((hash << 5) - hash + n.id.charCodeAt(i)) | 0;
     const pos = positions.get(n);
@@ -1969,7 +1732,7 @@ function buildGraph(root: TreeNode): void {
   glowTimestamps = new Map();
   rebuildClusters();
 
-  if (initialLayout === "tree") {
+  if (settings.initialLayout === "tree") {
     for (let i = 0; i < 150; i++) {
       simulate();
       alpha *= alphaDecay;
@@ -1998,7 +1761,7 @@ function tick(): void {
 
   draw();
 
-  const needsAnimation = alpha > 0.001 || glowTimestamps.size > 0 || dragNode !== null || panning || constellation || unavailableMode === "pulse";
+  const needsAnimation = alpha > 0.001 || glowTimestamps.size > 0 || dragNode !== null || panning || settings.constellation || settings.unavailableMode === "pulse";
   if (needsAnimation) {
     frame = requestAnimationFrame(tick);
   } else {
@@ -2114,7 +1877,7 @@ function quadRepulse(quad: QuadNode, fn: FNode, ra: number): void {
 }
 
 function simulate(): void {
-  const ra = repulsion * alpha;
+  const ra = settings.repulsion * alpha;
 
   // Compute bounding box for quadtree
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -2138,7 +1901,7 @@ function simulate(): void {
     const dx = edge.target.x - edge.source.x;
     const dy = edge.target.y - edge.source.y;
     const d = Math.sqrt(dx * dx + dy * dy) || 1;
-    const f = (d - springLen) * springK * alpha;
+    const f = (d - settings.springLen) * settings.springK * alpha;
     const fx = (dx / d) * f;
     const fy = (dy / d) * f;
     edge.source.vx += fx;
@@ -2154,9 +1917,9 @@ function simulate(): void {
 
   for (const n of fnodes) {
     if (n.fx !== null) { n.x = n.fx; n.vx = 0; }
-    else { n.vx *= damping; n.x += n.vx; }
+    else { n.vx *= settings.damping; n.x += n.vx; }
     if (n.fy !== null) { n.y = n.fy; n.vy = 0; }
-    else { n.vy *= damping; n.y += n.vy; }
+    else { n.vy *= settings.damping; n.y += n.vy; }
   }
 }
 
@@ -2241,8 +2004,8 @@ function drawHull(ctx: CanvasRenderingContext2D, cluster: Cluster): void {
 
 function drawLabels(ctx: CanvasRenderingContext2D): void {
   const fontFamily = "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
-  const entityFontSize = labelSize / transform.k;
-  const parentFontSize = (labelSize * 1.4) / transform.k;
+  const entityFontSize = settings.labelSize / transform.k;
+  const parentFontSize = (settings.labelSize * 1.4) / transform.k;
   const pad = 3 / transform.k;
   const radius = 3 / transform.k;
   ctx.textAlign = "center";
@@ -2257,16 +2020,16 @@ function drawLabels(ctx: CanvasRenderingContext2D): void {
     const isMiddle = kind === "domain" || kind === "device";
     const isGlass = kind === "root" || isArea;
 
-    if (isEntity && transform.k < entityLabelZoom) continue;
-    if (isMiddle && !showStructureLabels) continue;
+    if (isEntity && transform.k < settings.entityLabelZoom) continue;
+    if (isMiddle && !settings.showStructureLabels) continue;
 
     let labelAlpha = 1;
     if (isEntity) {
-      labelAlpha = Math.min(1, (transform.k - entityLabelZoom) / 0.5);
+      labelAlpha = Math.min(1, (transform.k - settings.entityLabelZoom) / 0.5);
     }
 
     const alpha = Math.max(0.3, labelAlpha);
-    const middleFontSize = labelSize * 1.15;
+    const middleFontSize = settings.labelSize * 1.15;
     const middlePad = 3;
     const middleRadius = 3;
     const middleGap = 2;
@@ -2302,7 +2065,7 @@ function drawLabels(ctx: CanvasRenderingContext2D): void {
       const div = glassLabels[glassIndex++];
       const screenX = n.x * transform.k + transform.x;
       const screenY = textY * transform.k + transform.y;
-      const baseFontSize = kind === "root" ? labelSize * 1.4 * 1.2 : labelSize * 1.4;
+      const baseFontSize = kind === "root" ? settings.labelSize * 1.4 * 1.2 : settings.labelSize * 1.4;
       const screenFontSize = baseFontSize * transform.k;
       const padY = 2 * transform.k;
       const padX = 8 * transform.k;
@@ -2450,13 +2213,13 @@ function drawGlows(ctx: CanvasRenderingContext2D): void {
     ctx.beginPath();
     ctx.arc(fn.x, fn.y, ringRadius, 0, Math.PI * 2);
     ctx.fillStyle = nodeColor;
-    ctx.globalAlpha = opacity * 0.2 * glowBrightness;
+    ctx.globalAlpha = opacity * 0.2 * settings.glowBrightness;
     ctx.fill();
 
     ctx.beginPath();
     ctx.arc(fn.x, fn.y, ringRadius, 0, Math.PI * 2);
     ctx.strokeStyle = nodeColor;
-    ctx.globalAlpha = opacity * 0.9 * glowBrightness;
+    ctx.globalAlpha = opacity * 0.9 * settings.glowBrightness;
     ctx.lineWidth = (3 + 4 * (1 - progress)) / transform.k;
     ctx.stroke();
 
@@ -2465,7 +2228,7 @@ function drawGlows(ctx: CanvasRenderingContext2D): void {
       ctx.beginPath();
       ctx.arc(fn.x, fn.y, fn.r * 2.5, 0, Math.PI * 2);
       ctx.fillStyle = "#fff";
-      ctx.globalAlpha = flashOpacity * 0.5 * glowBrightness;
+      ctx.globalAlpha = flashOpacity * 0.5 * settings.glowBrightness;
       ctx.fill();
     }
 
@@ -2481,7 +2244,7 @@ function drawGlowLine(
   ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number,
   lineColor: string, alpha: number, width: number
 ): void {
-  ctx.globalAlpha = alpha * 0.15 * lineGlow;
+  ctx.globalAlpha = alpha * 0.15 * settings.lineGlow;
   ctx.strokeStyle = lineColor;
   ctx.lineWidth = width * 6;
   ctx.beginPath();
@@ -2489,14 +2252,14 @@ function drawGlowLine(
   ctx.lineTo(x2, y2);
   ctx.stroke();
 
-  ctx.globalAlpha = alpha * 0.4 * lineGlow;
+  ctx.globalAlpha = alpha * 0.4 * settings.lineGlow;
   ctx.lineWidth = width * 2.5;
   ctx.beginPath();
   ctx.moveTo(x1, y1);
   ctx.lineTo(x2, y2);
   ctx.stroke();
 
-  ctx.globalAlpha = alpha * 0.9 * lineGlow;
+  ctx.globalAlpha = alpha * 0.9 * settings.lineGlow;
   ctx.lineWidth = width;
   ctx.beginPath();
   ctx.moveTo(x1, y1);
@@ -2550,7 +2313,7 @@ function drawConstellation(ctx: CanvasRenderingContext2D, now: number): void {
     ctx.setLineDash([]);
   }
 
-  const starScale = starSize / Math.sqrt(transform.k);
+  const starScale = settings.starSize / Math.sqrt(transform.k);
 
   invalidateSpriteCache();
 
@@ -2559,19 +2322,19 @@ function drawConstellation(ctx: CanvasRenderingContext2D, now: number): void {
   for (const fn of fnodes) {
     if (fn.tree.kind !== "entity") continue;
 
-    const unavail = isUnavailable(fn) && (unavailableMode === "pulse" || unavailableMode === "ring");
-    const twinkle = twinkleSpeed === 0 ? 1 : 0.5 + 0.5 * Math.sin(now * 0.003 * twinkleSpeed + fn.phase);
+    const unavail = isUnavailable(fn) && (settings.unavailableMode === "pulse" || settings.unavailableMode === "ring");
+    const twinkle = settings.twinkleSpeed === 0 ? 1 : 0.5 + 0.5 * Math.sin(now * 0.003 * settings.twinkleSpeed + fn.phase);
     const pulse = twinkle * twinkle;
     const baseAlpha = unavail ? 0.15 : 0.5;
-    const twinklePulse = twinkleMin + (1 - twinkleMin) * pulse;
-    const haloAlpha = Math.min(1, baseAlpha * twinklePulse * glowBrightness);
+    const twinklePulse = settings.twinkleMin + (1 - settings.twinkleMin) * pulse;
+    const haloAlpha = Math.min(1, baseAlpha * twinklePulse * settings.glowBrightness);
     const coreAlpha = Math.min(1, twinklePulse * (unavail ? 0.4 : 1));
 
     const nodeCol = unavail ? "#666" : color(fn.tree);
     const starR = 5 * starScale;
-    const sizePulse = 1 + twinkleSize * (pulse - 0.5);
-    const haloR = starR * glowSize * glowIntensity * sizePulse;
-    const sprite = getStarSprite(nodeCol, glowIntensity);
+    const sizePulse = 1 + settings.twinkleSize * (pulse - 0.5);
+    const haloR = starR * settings.glowSize * settings.glowIntensity * sizePulse;
+    const sprite = getStarSprite(nodeCol, settings.glowIntensity);
     const drawSize = haloR * 2;
 
     ctx.globalAlpha = haloAlpha;
@@ -2585,24 +2348,24 @@ function drawConstellation(ctx: CanvasRenderingContext2D, now: number): void {
 }
 
 function drawConstellationParents(ctx: CanvasRenderingContext2D, now: number): void {
-  const starScale = starSize / Math.sqrt(transform.k);
-  const pgi = parentGlowIntensity;
+  const starScale = settings.starSize / Math.sqrt(transform.k);
+  const pgi = settings.parentGlowIntensity;
 
   ctx.globalCompositeOperation = "screen";
 
   for (const fn of fnodes) {
     if (fn.tree.kind === "entity") continue;
 
-    const twinkle = twinkleSpeed === 0 ? 1 : 0.5 + 0.5 * Math.sin(now * 0.003 * twinkleSpeed + fn.phase);
+    const twinkle = settings.twinkleSpeed === 0 ? 1 : 0.5 + 0.5 * Math.sin(now * 0.003 * settings.twinkleSpeed + fn.phase);
     const pulse = twinkle * twinkle;
-    const twinklePulse = twinkleMin + (1 - twinkleMin) * pulse;
-    const haloAlpha = Math.min(1, 0.9 * twinklePulse * glowBrightness);
+    const twinklePulse = settings.twinkleMin + (1 - settings.twinkleMin) * pulse;
+    const haloAlpha = Math.min(1, 0.9 * twinklePulse * settings.glowBrightness);
     const coreAlpha = Math.min(1, twinklePulse);
 
     const nodeCol = color(fn.tree);
     const starR = (fn.tree.kind === "root" ? 14 : 9) * starScale;
-    const sizePulse = 1 + twinkleSize * (pulse - 0.5);
-    const haloR = starR * glowSize * pgi * sizePulse;
+    const sizePulse = 1 + settings.twinkleSize * (pulse - 0.5);
+    const haloR = starR * settings.glowSize * pgi * sizePulse;
     const sprite = getStarSprite(nodeCol, pgi);
     const drawSize = haloR * 2;
 
@@ -2624,13 +2387,13 @@ function drawConstellationHover(ctx: CanvasRenderingContext2D): void {
   const t = Math.min(1, elapsed / 120);
   const ease = t * (2 - t);
 
-  const starScale = starSize / Math.sqrt(transform.k);
+  const starScale = settings.starSize / Math.sqrt(transform.k);
   const isEntity = fn.tree.kind === "entity";
   const baseR = isEntity ? 5 : (fn.tree.kind === "root" ? 14 : 9);
   const starR = baseR * starScale;
-  const intensity = isEntity ? glowIntensity : parentGlowIntensity;
+  const intensity = isEntity ? settings.glowIntensity : settings.parentGlowIntensity;
   const scale = 1 + 0.5 * ease;
-  const haloR = starR * glowSize * intensity * scale;
+  const haloR = starR * settings.glowSize * intensity * scale;
   const nodeCol = color(fn.tree);
   const sprite = getStarSprite(nodeCol, intensity);
   const drawSize = haloR * 2;
@@ -2646,7 +2409,7 @@ function drawConstellationHover(ctx: CanvasRenderingContext2D): void {
 
 function drawStarEffects(ctx: CanvasRenderingContext2D, now: number): void {
   const expired: FNode[] = [];
-  const ss = starSize * effectScale / Math.sqrt(transform.k);
+  const ss = settings.starSize * settings.effectScale / Math.sqrt(transform.k);
 
   for (const [fn, startTime] of glowTimestamps) {
     const elapsed = now - startTime;
@@ -2657,7 +2420,7 @@ function drawStarEffects(ctx: CanvasRenderingContext2D, now: number): void {
     const t = elapsed / GLOW_DURATION;
     const nodeCol = color(fn.tree);
 
-    switch (starEffect) {
+    switch (settings.starEffect) {
       case "supernova":
         drawSupernova(ctx, fn, t, nodeCol, ss);
         break;
@@ -2682,9 +2445,9 @@ function drawStarEffects(ctx: CanvasRenderingContext2D, now: number): void {
 
 function drawSupernova(ctx: CanvasRenderingContext2D, fn: FNode, t: number, nodeCol: string, ss: number): void {
   const ease = 1 - (1 - t) * (1 - t);
-  const blastR = ss * 80 * ease * glowIntensity;
+  const blastR = ss * 80 * ease * settings.glowIntensity;
   const opacity = (1 - t);
-  const gb = glowBrightness;
+  const gb = settings.glowBrightness;
 
   const blast = ctx.createRadialGradient(fn.x, fn.y, 0, fn.x, fn.y, blastR);
   blast.addColorStop(0, "#fff");
@@ -2738,7 +2501,7 @@ function drawShootingStar(ctx: CanvasRenderingContext2D, fn: FNode, t: number, n
     const fade = (1 - i / trailLen) * (1 - t);
     const r = ss * (3 - i * 0.3);
 
-    ctx.globalAlpha = fade * 0.7 * glowBrightness;
+    ctx.globalAlpha = fade * 0.7 * settings.glowBrightness;
     ctx.fillStyle = i === 0 ? "#fff" : nodeCol;
     ctx.beginPath();
     ctx.arc(tx, ty, Math.max(r, ss * 0.5), 0, Math.PI * 2);
@@ -2749,7 +2512,7 @@ function drawShootingStar(ctx: CanvasRenderingContext2D, fn: FNode, t: number, n
   headGlow.addColorStop(0, "#fff");
   headGlow.addColorStop(0.3, nodeCol);
   headGlow.addColorStop(1, transparent(nodeCol));
-  ctx.globalAlpha = (1 - t) * 0.6 * glowBrightness;
+  ctx.globalAlpha = (1 - t) * 0.6 * settings.glowBrightness;
   ctx.fillStyle = headGlow;
   ctx.beginPath();
   ctx.arc(hx, hy, ss * 10, 0, Math.PI * 2);
@@ -2759,14 +2522,14 @@ function drawShootingStar(ctx: CanvasRenderingContext2D, fn: FNode, t: number, n
 function drawFlare(ctx: CanvasRenderingContext2D, fn: FNode, t: number, nodeCol: string, ss: number, now: number): void {
   const intensity = t < 0.15 ? t / 0.15 : 1 - (t - 0.15) / 0.85;
   const rotation = now * 0.001;
-  const spikeLen = ss * (5 + 45 * intensity * glowIntensity);
+  const spikeLen = ss * (5 + 45 * intensity * settings.glowIntensity);
   const spikeCount = 4;
 
   const coreGlow = ctx.createRadialGradient(fn.x, fn.y, 0, fn.x, fn.y, ss * 8 * intensity);
   coreGlow.addColorStop(0, "#fff");
   coreGlow.addColorStop(0.5, nodeCol);
   coreGlow.addColorStop(1, transparent(nodeCol));
-  ctx.globalAlpha = intensity * 0.7 * glowBrightness;
+  ctx.globalAlpha = intensity * 0.7 * settings.glowBrightness;
   ctx.fillStyle = coreGlow;
   ctx.beginPath();
   ctx.arc(fn.x, fn.y, ss * 8 * intensity, 0, Math.PI * 2);
@@ -2787,7 +2550,7 @@ function drawFlare(ctx: CanvasRenderingContext2D, fn: FNode, t: number, nodeCol:
     grad.addColorStop(0.6, nodeCol);
     grad.addColorStop(1, transparent(nodeCol));
 
-    ctx.globalAlpha = intensity * 0.6 * glowBrightness;
+    ctx.globalAlpha = intensity * 0.6 * settings.glowBrightness;
     ctx.strokeStyle = grad;
     ctx.lineWidth = ss * (1 + 2 * intensity);
     ctx.beginPath();
@@ -2825,7 +2588,7 @@ function drawPulseWave(ctx: CanvasRenderingContext2D, fn: FNode, t: number, node
     const fadeIn = Math.max(0, 1 - Math.abs(waveHit - 0.5) * 2);
     const fade = fadeIn * (1 - t);
 
-    ctx.globalAlpha = fade * 0.8 * glowBrightness;
+    ctx.globalAlpha = fade * 0.8 * settings.glowBrightness;
     ctx.fillStyle = "#fff";
     ctx.beginPath();
     ctx.arc(node.x, node.y, ss * (3 + 5 * fadeIn), 0, Math.PI * 2);
@@ -2834,7 +2597,7 @@ function drawPulseWave(ctx: CanvasRenderingContext2D, fn: FNode, t: number, node
     const glow = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, ss * 12 * fadeIn);
     glow.addColorStop(0, nodeCol);
     glow.addColorStop(1, transparent(nodeCol));
-    ctx.globalAlpha = fade * 0.4 * glowBrightness;
+    ctx.globalAlpha = fade * 0.4 * settings.glowBrightness;
     ctx.fillStyle = glow;
     ctx.beginPath();
     ctx.arc(node.x, node.y, ss * 12 * fadeIn, 0, Math.PI * 2);
@@ -2851,7 +2614,7 @@ function drawPulseWave(ctx: CanvasRenderingContext2D, fn: FNode, t: number, node
     const fadeIn = Math.max(0, 1 - Math.abs(waveHit - 0.5) * 2);
     const fade = fadeIn * (1 - t);
 
-    ctx.globalAlpha = fade * 0.7 * glowBrightness;
+    ctx.globalAlpha = fade * 0.7 * settings.glowBrightness;
     ctx.strokeStyle = nodeCol;
     ctx.lineWidth = ss * (1 + 3 * fadeIn);
     ctx.beginPath();
@@ -2873,17 +2636,17 @@ function drawColorShift(ctx: CanvasRenderingContext2D, fn: FNode, t: number, ss:
   const shiftTransparent = `hsla(${hue}, ${sat}%, ${light}%, 0)`;
   const fade = 1 - t * t;
 
-  const glow = ctx.createRadialGradient(fn.x, fn.y, 0, fn.x, fn.y, ss * 20 * glowIntensity);
+  const glow = ctx.createRadialGradient(fn.x, fn.y, 0, fn.x, fn.y, ss * 20 * settings.glowIntensity);
   glow.addColorStop(0, shiftColor);
   glow.addColorStop(0.3, shiftColor);
   glow.addColorStop(1, shiftTransparent);
-  ctx.globalAlpha = fade * 0.7 * glowBrightness;
+  ctx.globalAlpha = fade * 0.7 * settings.glowBrightness;
   ctx.fillStyle = glow;
   ctx.beginPath();
-  ctx.arc(fn.x, fn.y, ss * 20 * glowIntensity, 0, Math.PI * 2);
+  ctx.arc(fn.x, fn.y, ss * 20 * settings.glowIntensity, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.globalAlpha = fade * glowBrightness;
+  ctx.globalAlpha = fade * settings.glowBrightness;
   ctx.fillStyle = t < 0.15 ? "#fff" : shiftColor;
   ctx.beginPath();
   ctx.arc(fn.x, fn.y, ss * 3, 0, Math.PI * 2);
@@ -2897,7 +2660,7 @@ function isUnavailable(fn: FNode): boolean {
 }
 
 function drawUnavailablePulses(ctx: CanvasRenderingContext2D, now: number): void {
-  if (unavailableMode !== "pulse") return;
+  if (settings.unavailableMode !== "pulse") return;
 
   const pulse = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(now * 0.004));
 
@@ -2928,7 +2691,7 @@ function draw(): void {
   const dpr = devicePixelRatio;
 
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.fillStyle = backgroundColor;
+  ctx.fillStyle = settings.backgroundColor;
   ctx.fillRect(0, 0, width, height);
 
   ctx.setTransform(
@@ -2937,9 +2700,9 @@ function draw(): void {
     dpr * transform.x, dpr * transform.y
   );
 
-  if (glassContainer) glassContainer.style.display = showLabels ? "" : "none";
+  if (glassContainer) glassContainer.style.display = settings.showLabels ? "" : "none";
 
-  if (constellation) {
+  if (settings.constellation) {
     const now = performance.now();
     drawConstellation(ctx, now);
     drawStarEffects(ctx, now);
@@ -2947,19 +2710,19 @@ function draw(): void {
     drawConstellationHover(ctx);
     drawUnavailablePulses(ctx, now);
     drawSearchHighlights(ctx);
-    if (showLabels) drawLabels(ctx);
+    if (settings.showLabels) drawLabels(ctx);
     return;
   }
 
-  if (showHulls) {
+  if (settings.showHulls) {
     for (const cluster of clusters) {
       drawHull(ctx, cluster);
     }
   }
 
-  ctx.globalAlpha = Math.min(1, lineGlow);
-  ctx.lineWidth = (0.5 + lineGlow) / transform.k;
-  ctx.strokeStyle = lineGlow > 1 ? "#666" : "#444";
+  ctx.globalAlpha = Math.min(1, settings.lineGlow);
+  ctx.lineWidth = (0.5 + settings.lineGlow) / transform.k;
+  ctx.strokeStyle = settings.lineGlow > 1 ? "#666" : "#444";
   for (const e of fedges) {
     ctx.beginPath();
     ctx.moveTo(e.source.x, e.source.y);
@@ -2972,13 +2735,13 @@ function draw(): void {
 
   for (const n of fnodes) {
     const unavail = isUnavailable(n);
-    const dimmed = unavail && unavailableMode === "pulse";
-    const ringed = unavail && unavailableMode === "ring";
+    const dimmed = unavail && settings.unavailableMode === "pulse";
+    const ringed = unavail && settings.unavailableMode === "ring";
     ctx.globalAlpha = dimmed ? 0.3 : 1;
     ctx.beginPath();
     ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
     if (ringed) {
-      ctx.fillStyle = backgroundColor;
+      ctx.fillStyle = settings.backgroundColor;
       ctx.fill();
       ctx.globalAlpha = 0.12;
       ctx.fillStyle = color(n.tree);
@@ -2994,7 +2757,7 @@ function draw(): void {
       ctx.fill();
     }
 
-    if (showIcons && n.tree.kind === "entity" && n.tree.entityId) {
+    if (settings.showIcons && n.tree.kind === "entity" && n.tree.entityId) {
       const stateAttrIcon = currentStates.get(n.tree.entityId)?.attributes.icon;
       const iconName = getEntityIconName(n.tree.domain, stateAttrIcon);
       if (iconName) {
@@ -3066,7 +2829,7 @@ function draw(): void {
   drawSearchHighlights(ctx);
   drawGlows(ctx);
 
-  if (showLabels) {
+  if (settings.showLabels) {
     drawLabels(ctx);
   }
 }
@@ -3136,7 +2899,7 @@ function onMouseMove(e: MouseEvent): void {
       if (count && count > 0) {
         extra += `<br><span style="color:#9e9e9e;font-size:0.7rem">Changes: ${count}</span>`;
       }
-      if (showAutomationEdges) {
+      if (settings.showAutomationEdges) {
         extra += getAutomationTooltipHtml(n.tree.entityId);
       }
     }
