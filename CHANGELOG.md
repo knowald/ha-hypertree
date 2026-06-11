@@ -8,6 +8,8 @@
 - Stop the render loop while the graph is idle (simulation settled, no effects, twinkle off); interaction, state changes, and settings edits wake it, and the debug FPS readout shows "idle"
 - Batch constellation edge strokes into one path per color instead of three strokes per edge, which keeps Firefox's canvas GPU acceleration engaged
 - Cap the canvas backing resolution at 2x device pixel ratio
+- Pre-render effect glows (supernova, shooting star, flare, pulse wave, search and hover highlights) into cached sprites instead of building radial gradients every frame, which Firefox rasterizes in software
+- Skip drawing nodes, edges, labels, and effects outside the viewport when zoomed in
 
 ### Fixed
 

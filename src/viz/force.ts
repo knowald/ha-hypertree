@@ -113,6 +113,72 @@ let centroidCache: { x: number; y: number }[] | null = null;
 let centroidEdgeCache: [number, number][] = [];
 let centroidCacheClusters: Cluster[] | null = null;
 
+// World-space viewport bounds, refreshed at the start of every draw().
+let viewMinX = 0, viewMaxX = 0, viewMinY = 0, viewMaxY = 0;
+
+function updateViewBounds(): void {
+  viewMinX = -transform.x / transform.k;
+  viewMinY = -transform.y / transform.k;
+  viewMaxX = (width - transform.x) / transform.k;
+  viewMaxY = (height - transform.y) / transform.k;
+}
+
+function inView(x: number, y: number, margin: number): boolean {
+  return x >= viewMinX - margin && x <= viewMaxX + margin &&
+    y >= viewMinY - margin && y <= viewMaxY + margin;
+}
+
+function segmentInView(x1: number, y1: number, x2: number, y2: number, margin: number): boolean {
+  return Math.max(x1, x2) >= viewMinX - margin && Math.min(x1, x2) <= viewMaxX + margin &&
+    Math.max(y1, y2) >= viewMinY - margin && Math.min(y1, y2) <= viewMaxY + margin;
+}
+
+// Radial gradients are not GPU-accelerated in Firefox; creating one per frame
+// drops that draw to a software path. Render each glow once into a sprite and
+// stamp it with drawImage, which stays on the GPU texture cache.
+type GlowSpriteProfile = "blast" | "head" | "core" | "soft" | "ring3" | "ring25";
+
+const GLOW_SPRITE_SIZE = 128;
+const glowSpriteCache = new Map<string, OffscreenCanvas>();
+
+function getGlowSprite(profile: GlowSpriteProfile, glowColor: string): OffscreenCanvas {
+  const key = `${profile}|${glowColor}`;
+  let sprite = glowSpriteCache.get(key);
+  if (sprite) return sprite;
+
+  sprite = new OffscreenCanvas(GLOW_SPRITE_SIZE, GLOW_SPRITE_SIZE);
+  const sctx = sprite.getContext("2d")!;
+  const center = GLOW_SPRITE_SIZE / 2;
+  const inner = profile === "ring3" ? center / 3 : profile === "ring25" ? center / 2.5 : 0;
+  const grad = sctx.createRadialGradient(center, center, inner, center, center, center);
+  switch (profile) {
+    case "blast":
+      grad.addColorStop(0, "#fff");
+      grad.addColorStop(0.15, glowColor);
+      break;
+    case "head":
+      grad.addColorStop(0, "#fff");
+      grad.addColorStop(0.3, glowColor);
+      break;
+    case "core":
+      grad.addColorStop(0, "#fff");
+      grad.addColorStop(0.5, glowColor);
+      break;
+    case "soft":
+    case "ring3":
+    case "ring25":
+      grad.addColorStop(0, glowColor);
+      break;
+  }
+  grad.addColorStop(1, transparent(glowColor));
+  sctx.fillStyle = grad;
+  sctx.beginPath();
+  sctx.arc(center, center, center, 0, Math.PI * 2);
+  sctx.fill();
+  glowSpriteCache.set(key, sprite);
+  return sprite;
+}
+
 const FONT_FAMILY = "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
 
 // Cache measureText results, which are costly per label per frame. Metrics do
@@ -319,6 +385,7 @@ export function createForceViz(registries: Registries, haUrl?: string, connectio
       pulseWaveFields.clear();
       centroidCache = null;
       labelMetricsCache.clear();
+      glowSpriteCache.clear();
       automationEdges = [];
       automationEdgesByEntity = new Map();
       automationLoaded = false;
@@ -1150,6 +1217,7 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
       dot.style.background = input.value;
       setDomainColor(domain, input.value);
       spriteCache.clear();
+      glowSpriteCache.clear();
       ensureLoop();
     });
 
@@ -1202,6 +1270,7 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   randomColorBtn.addEventListener("click", () => {
     randomizeColors();
     spriteCache.clear();
+    glowSpriteCache.clear();
     syncColorSwatches();
     ensureLoop();
   });
@@ -1213,6 +1282,7 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   resetAllBtn.addEventListener("click", () => {
     resetColors();
     spriteCache.clear();
+    glowSpriteCache.clear();
     applySettings({});
     revealedNodes.clear();
     collapsedNodes.clear();
@@ -1265,6 +1335,7 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
           if (data.settings) applySettings(data.settings);
           if (data.colors) setDomainColors(data.colors);
           spriteCache.clear();
+          glowSpriteCache.clear();
           removeSettings();
           settingsPanel = createSettings(container);
           rebuildWithStructure();
@@ -1519,10 +1590,15 @@ function drawAutomationEdges(drawCtx: CanvasRenderingContext2D): void {
   const hoveredEdges = hoveredEntityId ? automationEdgesByEntity.get(hoveredEntityId) : undefined;
   const hasHoveredEdges = hoveredEdges && hoveredEdges.length > 0;
 
+  // relation x highlight state is a tiny style space; batch segments per style
+  // so each frame strokes a handful of paths instead of one per edge.
+  const batches = new Map<string, { relation: AutomationRelation; alpha: number; width: number; segments: number[] }>();
+
   for (const edge of automationEdges) {
     const sourceNode = entityNodeMap.get(edge.automationEntityId);
     const targetNode = entityNodeMap.get(edge.targetEntityId);
     if (!sourceNode || !targetNode) continue;
+    if (!segmentInView(sourceNode.x, sourceNode.y, targetNode.x, targetNode.y, 4)) continue;
 
     const isConnected = hasHoveredEdges && (
       edge.automationEntityId === hoveredEntityId || edge.targetEntityId === hoveredEntityId
@@ -1531,14 +1607,26 @@ function drawAutomationEdges(drawCtx: CanvasRenderingContext2D): void {
     const lineAlpha = hasHoveredEdges ? (isConnected ? 0.85 : 0.15) : 0.5;
     const lineWidth = (hasHoveredEdges && isConnected ? 2.5 : 1.5) * invK;
 
-    drawCtx.globalAlpha = lineAlpha;
-    drawCtx.strokeStyle = AUTOMATION_COLORS[edge.relation];
-    drawCtx.lineWidth = lineWidth;
-    drawCtx.setLineDash(AUTOMATION_DASHES[edge.relation].map((v) => v * invK));
+    const key = `${edge.relation}|${lineAlpha}`;
+    let batch = batches.get(key);
+    if (!batch) {
+      batch = { relation: edge.relation, alpha: lineAlpha, width: lineWidth, segments: [] };
+      batches.set(key, batch);
+    }
+    batch.segments.push(sourceNode.x, sourceNode.y, targetNode.x, targetNode.y);
+  }
 
+  for (const batch of batches.values()) {
+    drawCtx.globalAlpha = batch.alpha;
+    drawCtx.strokeStyle = AUTOMATION_COLORS[batch.relation];
+    drawCtx.lineWidth = batch.width;
+    drawCtx.setLineDash(AUTOMATION_DASHES[batch.relation].map((v) => v * invK));
     drawCtx.beginPath();
-    drawCtx.moveTo(sourceNode.x, sourceNode.y);
-    drawCtx.lineTo(targetNode.x, targetNode.y);
+    const s = batch.segments;
+    for (let i = 0; i < s.length; i += 4) {
+      drawCtx.moveTo(s[i], s[i + 1]);
+      drawCtx.lineTo(s[i + 2], s[i + 3]);
+    }
     drawCtx.stroke();
   }
 
@@ -2088,6 +2176,9 @@ function drawLabels(ctx: CanvasRenderingContext2D): void {
 
     if (isEntity && transform.k < settings.entityLabelZoom) continue;
     if (isMiddle && !settings.showStructureLabels) continue;
+    // Entity font grows as 1/k in world units, so scale the margin with it or
+    // long labels clip at screen edges under extreme slider settings.
+    if (!inView(n.x, n.y, Math.max(600, entityFontSize * 30))) continue;
 
     let labelAlpha = 1;
     if (isEntity) {
@@ -2223,15 +2314,10 @@ function drawSearchHighlights(ctx: CanvasRenderingContext2D): void {
 
     const nodeCol = color(fn.tree);
     const highlightR = fn.r * 3;
+    if (!inView(fn.x, fn.y, highlightR)) continue;
 
-    const glow = ctx.createRadialGradient(fn.x, fn.y, fn.r, fn.x, fn.y, highlightR);
-    glow.addColorStop(0, nodeCol);
-    glow.addColorStop(1, transparent(nodeCol));
     ctx.globalAlpha = 0.5;
-    ctx.fillStyle = glow;
-    ctx.beginPath();
-    ctx.arc(fn.x, fn.y, highlightR, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.drawImage(getGlowSprite("ring3", nodeCol), fn.x - highlightR, fn.y - highlightR, highlightR * 2, highlightR * 2);
 
     ctx.beginPath();
     ctx.arc(fn.x, fn.y, fn.r + 2 / transform.k, 0, Math.PI * 2);
@@ -2248,14 +2334,8 @@ function drawHoverHighlight(ctx: CanvasRenderingContext2D, fn: FNode): void {
   const nodeCol = color(fn.tree);
   const haloR = fn.r * 2.5;
 
-  const glow = ctx.createRadialGradient(fn.x, fn.y, fn.r, fn.x, fn.y, haloR);
-  glow.addColorStop(0, nodeCol);
-  glow.addColorStop(1, transparent(nodeCol));
   ctx.globalAlpha = 0.4;
-  ctx.fillStyle = glow;
-  ctx.beginPath();
-  ctx.arc(fn.x, fn.y, haloR, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.drawImage(getGlowSprite("ring25", nodeCol), fn.x - haloR, fn.y - haloR, haloR * 2, haloR * 2);
 
   ctx.beginPath();
   ctx.arc(fn.x, fn.y, fn.r + 1.5 / transform.k, 0, Math.PI * 2);
@@ -2364,6 +2444,7 @@ function drawConstellation(ctx: CanvasRenderingContext2D, now: number): void {
 
   const edgeBatches = new Map<string, GlowBatch>();
   for (const e of fedges) {
+    if (!segmentInView(e.source.x, e.source.y, e.target.x, e.target.y, 4)) continue;
     const sc = nodeCluster.get(e.source);
     const tc = nodeCluster.get(e.target);
     let edgeColor: string;
@@ -2439,8 +2520,10 @@ function drawConstellation(ctx: CanvasRenderingContext2D, now: number): void {
 
   ctx.globalCompositeOperation = "screen";
 
+  const entityCullMargin = 5 * starScale * settings.glowSize * settings.glowIntensity * (1 + settings.twinkleSize);
   for (const fn of fnodes) {
     if (fn.tree.kind !== "entity") continue;
+    if (!inView(fn.x, fn.y, entityCullMargin)) continue;
 
     const unavail = isUnavailable(fn) && (settings.unavailableMode === "pulse" || settings.unavailableMode === "ring");
     const twinkle = settings.twinkleSpeed === 0 ? 1 : 0.5 + 0.5 * Math.sin(now * 0.003 * settings.twinkleSpeed + fn.phase);
@@ -2473,8 +2556,10 @@ function drawConstellationParents(ctx: CanvasRenderingContext2D, now: number): v
 
   ctx.globalCompositeOperation = "screen";
 
+  const parentCullMargin = 14 * starScale * settings.glowSize * pgi * (1 + settings.twinkleSize);
   for (const fn of fnodes) {
     if (fn.tree.kind === "entity") continue;
+    if (!inView(fn.x, fn.y, parentCullMargin)) continue;
 
     const twinkle = settings.twinkleSpeed === 0 ? 1 : 0.5 + 0.5 * Math.sin(now * 0.003 * settings.twinkleSpeed + fn.phase);
     const pulse = twinkle * twinkle;
@@ -2572,15 +2657,8 @@ function drawSupernova(ctx: CanvasRenderingContext2D, fn: FNode, t: number, node
   const opacity = (1 - t);
   const gb = settings.glowBrightness;
 
-  const blast = ctx.createRadialGradient(fn.x, fn.y, 0, fn.x, fn.y, blastR);
-  blast.addColorStop(0, "#fff");
-  blast.addColorStop(0.15, nodeCol);
-  blast.addColorStop(1, transparent(nodeCol));
   ctx.globalAlpha = opacity * 0.6 * gb;
-  ctx.fillStyle = blast;
-  ctx.beginPath();
-  ctx.arc(fn.x, fn.y, blastR, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.drawImage(getGlowSprite("blast", nodeCol), fn.x - blastR, fn.y - blastR, blastR * 2, blastR * 2);
 
   if (t < 0.3) {
     const flashAlpha = 1 - t / 0.3;
@@ -2593,6 +2671,7 @@ function drawSupernova(ctx: CanvasRenderingContext2D, fn: FNode, t: number, node
 
   for (const other of fnodes) {
     if (other === fn) continue;
+    if (!inView(other.x, other.y, ss * 4)) continue;
     const dx = other.x - fn.x;
     const dy = other.y - fn.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
@@ -2631,15 +2710,9 @@ function drawShootingStar(ctx: CanvasRenderingContext2D, fn: FNode, t: number, n
     ctx.fill();
   }
 
-  const headGlow = ctx.createRadialGradient(hx, hy, 0, hx, hy, ss * 10);
-  headGlow.addColorStop(0, "#fff");
-  headGlow.addColorStop(0.3, nodeCol);
-  headGlow.addColorStop(1, transparent(nodeCol));
+  const headR = ss * 10;
   ctx.globalAlpha = (1 - t) * 0.6 * settings.glowBrightness;
-  ctx.fillStyle = headGlow;
-  ctx.beginPath();
-  ctx.arc(hx, hy, ss * 10, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.drawImage(getGlowSprite("head", nodeCol), hx - headR, hy - headR, headR * 2, headR * 2);
 }
 
 function drawFlare(ctx: CanvasRenderingContext2D, fn: FNode, t: number, nodeCol: string, ss: number, now: number): void {
@@ -2648,15 +2721,11 @@ function drawFlare(ctx: CanvasRenderingContext2D, fn: FNode, t: number, nodeCol:
   const spikeLen = ss * (5 + 45 * intensity * settings.glowIntensity);
   const spikeCount = 4;
 
-  const coreGlow = ctx.createRadialGradient(fn.x, fn.y, 0, fn.x, fn.y, ss * 8 * intensity);
-  coreGlow.addColorStop(0, "#fff");
-  coreGlow.addColorStop(0.5, nodeCol);
-  coreGlow.addColorStop(1, transparent(nodeCol));
-  ctx.globalAlpha = intensity * 0.7 * settings.glowBrightness;
-  ctx.fillStyle = coreGlow;
-  ctx.beginPath();
-  ctx.arc(fn.x, fn.y, ss * 8 * intensity, 0, Math.PI * 2);
-  ctx.fill();
+  const coreR = ss * 8 * intensity;
+  if (coreR > 0) {
+    ctx.globalAlpha = intensity * 0.7 * settings.glowBrightness;
+    ctx.drawImage(getGlowSprite("core", nodeCol), fn.x - coreR, fn.y - coreR, coreR * 2, coreR * 2);
+  }
 
   for (let i = 0; i < spikeCount; i++) {
     const angle = rotation + (i * Math.PI) / spikeCount;
@@ -2743,14 +2812,11 @@ function drawPulseWave(ctx: CanvasRenderingContext2D, fn: FNode, t: number, node
     ctx.arc(node.x, node.y, ss * (3 + 5 * fadeIn), 0, Math.PI * 2);
     ctx.fill();
 
-    const glow = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, ss * 12 * fadeIn);
-    glow.addColorStop(0, nodeCol);
-    glow.addColorStop(1, transparent(nodeCol));
-    ctx.globalAlpha = fade * 0.4 * settings.glowBrightness;
-    ctx.fillStyle = glow;
-    ctx.beginPath();
-    ctx.arc(node.x, node.y, ss * 12 * fadeIn, 0, Math.PI * 2);
-    ctx.fill();
+    const glowR = ss * 12 * fadeIn;
+    if (glowR > 0) {
+      ctx.globalAlpha = fade * 0.4 * settings.glowBrightness;
+      ctx.drawImage(getGlowSprite("soft", nodeCol), node.x - glowR, node.y - glowR, glowR * 2, glowR * 2);
+    }
   }
 
   for (const e of field.edges) {
@@ -2810,6 +2876,7 @@ function drawUnavailablePulses(ctx: CanvasRenderingContext2D, now: number): void
   const pulse = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(now * 0.004));
 
   for (const fn of fnodes) {
+    if (!inView(fn.x, fn.y, fn.r * 2.5 + 1)) continue;
     if (!isUnavailable(fn)) continue;
 
     const r = fn.r * 2.5;
@@ -2834,6 +2901,7 @@ function drawUnavailablePulses(ctx: CanvasRenderingContext2D, now: number): void
 function draw(): void {
   if (!canvas || !ctx) return;
   const dpr = renderScale();
+  updateViewBounds();
 
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = settings.backgroundColor;
@@ -2868,17 +2936,19 @@ function draw(): void {
   ctx.globalAlpha = Math.min(1, settings.lineGlow);
   ctx.lineWidth = (0.5 + settings.lineGlow) / transform.k;
   ctx.strokeStyle = settings.lineGlow > 1 ? "#666" : "#444";
+  ctx.beginPath();
   for (const e of fedges) {
-    ctx.beginPath();
+    if (!segmentInView(e.source.x, e.source.y, e.target.x, e.target.y, 2)) continue;
     ctx.moveTo(e.source.x, e.source.y);
     ctx.lineTo(e.target.x, e.target.y);
-    ctx.stroke();
   }
+  ctx.stroke();
   ctx.globalAlpha = 1;
 
   drawAutomationEdges(ctx);
 
   for (const n of fnodes) {
+    if (!inView(n.x, n.y, n.r * 2)) continue;
     const unavail = isUnavailable(n);
     const dimmed = unavail && settings.unavailableMode === "pulse";
     const ringed = unavail && settings.unavailableMode === "ring";
@@ -2931,6 +3001,10 @@ function draw(): void {
     const ss = 1 / transform.k;
     for (const n of fnodes) {
       if (!collapsedNodes.has(n.tree.id)) continue;
+      // Badge font has a 7-world-unit floor, so the margin must too or badges
+      // pop in at screen edges when zoomed in.
+      const fontSize = Math.max(7, 9 * ss);
+      if (!inView(n.x, n.y, n.r + 4 * ss + fontSize * 2)) continue;
 
       // Dashed ring around the node
       ctx.strokeStyle = "#aaa";
@@ -2944,7 +3018,6 @@ function draw(): void {
       // Child count badge
       const count = n.tree.leafCount;
       const label = String(count);
-      const fontSize = Math.max(7, 9 * ss);
       ctx.font = `600 ${fontSize}px sans-serif`;
       const tw = ctx.measureText(label).width;
       const badgeR = Math.max(tw / 2 + 2 * ss, 5 * ss);
