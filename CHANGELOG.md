@@ -1,9 +1,10 @@
 # Changelog
 
-## 0.12.1 - 2026-06-10
+## 0.13.0 - 2026-06-11
 
 ### Changed
 
+- Split the visual mode selector into a Style toggle (dots or stars) and an overlay mode (default, hulls, automations); star rendering now combines with hulls and automation edges instead of excluding them
 - Cache label text metrics, constellation centroid lines, and pulse-wave fields between frames to cut per-frame canvas work
 - Stop the render loop while the graph is idle (simulation settled, no effects, twinkle off); interaction, state changes, and settings edits wake it, and the debug FPS readout shows "idle"
 - Batch constellation edge strokes into one path per color instead of three strokes per edge, which keeps Firefox's canvas GPU acceleration engaged

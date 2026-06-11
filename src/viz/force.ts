@@ -819,16 +819,29 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
     saveSettings();
   }, "Initial node positions: tree (structured) or scatter (random)"));
 
-  // -- Visual mode radio (default / constellation / hulls / automations) --
-  const visualModeGroup = document.createElement("div");
-  visualModeGroup.className = "visual-mode-group";
-
-  const currentVisualMode = settings.showAutomationEdges ? "automations" : settings.constellation ? "constellation" : settings.showHulls ? "hulls" : "default";
-  const visualModes = ["default", "constellation", "hulls", "automations"] as const;
+  // -- Node style (dots / stars) with star sub-options --
+  const styleGroup = document.createElement("div");
+  styleGroup.className = "visual-mode-group";
 
   const constellationSubOptions = document.createElement("div");
   constellationSubOptions.className = "force-sub-options";
-  constellationSubOptions.hidden = currentVisualMode !== "constellation";
+  constellationSubOptions.hidden = !settings.constellation;
+
+  styleGroup.appendChild(makeSegmented("Style", ["dots", "stars"], settings.constellation ? "stars" : "dots", (v) => {
+    settings.constellation = v === "stars";
+    constellationSubOptions.hidden = !settings.constellation;
+    saveSettings();
+  }, "Render nodes as plain dots or glowing stars"));
+  styleGroup.appendChild(constellationSubOptions);
+  viewTab.appendChild(styleGroup);
+
+  // -- Overlay mode radio (default / hulls / automations) --
+  const visualModeGroup = document.createElement("div");
+  visualModeGroup.className = "visual-mode-group";
+
+  const currentVisualMode = settings.showAutomationEdges ? "automations" : settings.showHulls ? "hulls" : "default";
+  const visualModes = ["default", "hulls", "automations"] as const;
+
   const hullSubOptions = document.createElement("div");
   hullSubOptions.className = "force-sub-options";
   hullSubOptions.hidden = currentVisualMode !== "hulls";
@@ -837,10 +850,8 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   automationSubOptions.hidden = currentVisualMode !== "automations";
 
   function applyVisualMode(mode: string): void {
-    settings.constellation = mode === "constellation";
     settings.showHulls = mode === "hulls";
     settings.showAutomationEdges = mode === "automations";
-    constellationSubOptions.hidden = mode !== "constellation";
     hullSubOptions.hidden = mode !== "hulls";
     automationSubOptions.hidden = mode !== "automations";
     if (mode === "automations" && !automationLoaded && !automationLoading) loadAutomationEdges();
@@ -849,6 +860,7 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
       autoOnlyToggle.querySelector("input")!.checked = false;
       rebuildGraph();
     }
+    syncSettingsState();
     ensureLoop();
     saveSettings();
   }
@@ -866,7 +878,6 @@ function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
     label.appendChild(document.createTextNode(mode.charAt(0).toUpperCase() + mode.slice(1)));
     visualModeGroup.appendChild(label);
 
-    if (mode === "constellation") visualModeGroup.appendChild(constellationSubOptions);
     if (mode === "hulls") visualModeGroup.appendChild(hullSubOptions);
     if (mode === "automations") visualModeGroup.appendChild(automationSubOptions);
   }
@@ -2917,9 +2928,15 @@ function draw(): void {
 
   if (settings.constellation) {
     const now = performance.now();
+    if (settings.showHulls) {
+      for (const cluster of clusters) {
+        drawHull(ctx, cluster);
+      }
+    }
     drawConstellation(ctx, now);
     drawStarEffects(ctx, now);
     drawConstellationParents(ctx, now);
+    if (settings.showAutomationEdges) drawAutomationEdges(ctx);
     drawConstellationHover(ctx);
     drawUnavailablePulses(ctx, now);
     drawSearchHighlights(ctx);
