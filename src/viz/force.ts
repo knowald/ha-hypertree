@@ -8,7 +8,7 @@ import { createTransform, applyWheel, screenToWorld, type ZoomTransform } from "
 import { buildTree, buildTreeByDevice, flattenTree } from "../tree/build";
 import { loadCredentials, saveCredentials } from "../login";
 import { getRootElement } from "../rootElement";
-import { updateFps, debugLog } from "../debug";
+import { updateFps, markFpsIdle, debugLog } from "../debug";
 import { fetchAutomationEdges, type AutomationEdge, type AutomationRelation } from "../ha/automation";
 import {
   settings, saveSettings, applySettings,
@@ -372,6 +372,7 @@ function rebuildGraph(): void {
 
   alpha = 1;
   buildGraph(root);
+  ensureLoop();
 }
 
 function rebuildWithStructure(): void {
@@ -1324,7 +1325,7 @@ function makeToggle(label: string, initial: boolean, onChange: (v: boolean) => v
   const input = document.createElement("input");
   input.type = "checkbox";
   input.checked = initial;
-  input.addEventListener("change", () => onChange(input.checked));
+  input.addEventListener("change", () => { onChange(input.checked); ensureLoop(); });
   el.appendChild(input);
   el.appendChild(document.createTextNode(label));
   return el;
@@ -1344,7 +1345,7 @@ function makeSelect(label: string, options: string[], initial: string, onChange:
     if (opt === initial) option.selected = true;
     select.appendChild(option);
   }
-  select.addEventListener("change", () => onChange(select.value));
+  select.addEventListener("change", () => { onChange(select.value); ensureLoop(); });
   el.appendChild(select);
   return el;
 }
@@ -1368,6 +1369,7 @@ function makeSegmented(label: string, options: string[], initial: string, onChan
       for (const b of buttons) b.classList.remove("active");
       btn.classList.add("active");
       onChange(opt);
+      ensureLoop();
     });
     buttons.push(btn);
     wrap.appendChild(btn);
@@ -1399,6 +1401,7 @@ function makeSlider(
     const v = Number(input.value);
     valueSpan.textContent = step < 0.1 ? v.toFixed(3) : String(v);
     onChange(v);
+    ensureLoop();
   });
   el.append(nameSpan, input, valueSpan);
   return el;
@@ -1789,13 +1792,22 @@ function buildGraph(root: TreeNode): void {
   }
 }
 
+function renderScale(): number {
+  // Backing-store cost grows with DPR squared; above 2 the sharpness gain is
+  // marginal and large windows can exceed Firefox's accelerated-canvas size cap.
+  return Math.min(devicePixelRatio, 2);
+}
+
 function resize(): void {
   if (!canvas) return;
   const rect = canvas.getBoundingClientRect();
   width = rect.width;
   height = rect.height;
-  canvas.width = width * devicePixelRatio;
-  canvas.height = height * devicePixelRatio;
+  const dpr = renderScale();
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  // Setting canvas.width clears the bitmap, so repaint even when idle.
+  ensureLoop();
 }
 
 function tick(): void {
@@ -1810,11 +1822,17 @@ function tick(): void {
 
   draw();
 
-  const needsAnimation = alpha > 0.001 || glowTimestamps.size > 0 || dragNode !== null || panning || settings.constellation || settings.unavailableMode === "pulse";
+  // Constellation only animates per-frame when twinkle is on; otherwise the
+  // settled graph is static and the loop stops until ensureLoop() wakes it.
+  const hoverAnimating = hoveredNode !== null && performance.now() - hoverStartTime < 150;
+  const needsAnimation = alpha > 0.001 || glowTimestamps.size > 0 || dragNode !== null || panning ||
+    (settings.constellation && settings.twinkleSpeed > 0) ||
+    settings.unavailableMode === "pulse" || hoverAnimating;
   if (needsAnimation) {
     frame = requestAnimationFrame(tick);
   } else {
     frame = 0;
+    markFpsIdle();
   }
 }
 
@@ -2296,48 +2314,81 @@ function drawGlows(ctx: CanvasRenderingContext2D): void {
   }
 }
 
+// Wide faint pass, medium pass, bright core pass.
+const GLOW_PASSES: [alphaScale: number, widthScale: number][] = [[0.15, 6], [0.4, 2.5], [0.9, 1]];
+
 function drawGlowLine(
   ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number,
   lineColor: string, alpha: number, width: number
 ): void {
-  ctx.globalAlpha = alpha * 0.15 * settings.lineGlow;
   ctx.strokeStyle = lineColor;
-  ctx.lineWidth = width * 6;
-  ctx.beginPath();
-  ctx.moveTo(x1, y1);
-  ctx.lineTo(x2, y2);
-  ctx.stroke();
+  for (const [alphaScale, widthScale] of GLOW_PASSES) {
+    ctx.globalAlpha = alpha * alphaScale * settings.lineGlow;
+    ctx.lineWidth = width * widthScale;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  }
+}
 
-  ctx.globalAlpha = alpha * 0.4 * settings.lineGlow;
-  ctx.lineWidth = width * 2.5;
-  ctx.beginPath();
-  ctx.moveTo(x1, y1);
-  ctx.lineTo(x2, y2);
-  ctx.stroke();
+interface GlowBatch {
+  color: string;
+  alpha: number;
+  width: number;
+  segments: number[];
+}
 
-  ctx.globalAlpha = alpha * 0.9 * settings.lineGlow;
-  ctx.lineWidth = width;
-  ctx.beginPath();
-  ctx.moveTo(x1, y1);
-  ctx.lineTo(x2, y2);
-  ctx.stroke();
+// Stroking each edge separately creates fresh path geometry per stroke call,
+// which defeats Firefox's GPU path cache and can silently disable canvas
+// acceleration; batching all same-style edges into one path per pass avoids it.
+function strokeGlowBatches(ctx: CanvasRenderingContext2D, batches: Map<string, GlowBatch>): void {
+  for (const batch of batches.values()) {
+    ctx.strokeStyle = batch.color;
+    for (const [alphaScale, widthScale] of GLOW_PASSES) {
+      ctx.globalAlpha = batch.alpha * alphaScale * settings.lineGlow;
+      ctx.lineWidth = batch.width * widthScale;
+      ctx.beginPath();
+      const s = batch.segments;
+      for (let i = 0; i < s.length; i += 4) {
+        ctx.moveTo(s[i], s[i + 1]);
+        ctx.lineTo(s[i + 2], s[i + 3]);
+      }
+      ctx.stroke();
+    }
+  }
 }
 
 function drawConstellation(ctx: CanvasRenderingContext2D, now: number): void {
   const invK = 1 / transform.k;
 
+  const edgeBatches = new Map<string, GlowBatch>();
   for (const e of fedges) {
     const sc = nodeCluster.get(e.source);
     const tc = nodeCluster.get(e.target);
+    let edgeColor: string;
+    let edgeAlpha: number;
+    let edgeWidth: number;
     if (sc && sc === tc) {
-      drawGlowLine(ctx, e.source.x, e.source.y, e.target.x, e.target.y,
-        color(sc.groupNode), 0.25, 0.5 * invK);
+      edgeColor = color(sc.groupNode);
+      edgeAlpha = 0.25;
+      edgeWidth = 0.5 * invK;
     } else if (e.source.tree.kind !== "entity" && e.target.tree.kind !== "entity") {
-      const edgeCol = color(e.source.tree);
-      drawGlowLine(ctx, e.source.x, e.source.y, e.target.x, e.target.y,
-        edgeCol, 0.35, 0.6 * invK);
+      edgeColor = color(e.source.tree);
+      edgeAlpha = 0.35;
+      edgeWidth = 0.6 * invK;
+    } else {
+      continue;
     }
+    const key = `${edgeColor}|${edgeAlpha}`;
+    let batch = edgeBatches.get(key);
+    if (!batch) {
+      batch = { color: edgeColor, alpha: edgeAlpha, width: edgeWidth, segments: [] };
+      edgeBatches.set(key, batch);
+    }
+    batch.segments.push(e.source.x, e.source.y, e.target.x, e.target.y);
   }
+  strokeGlowBatches(ctx, edgeBatches);
 
   if (clusters.length > 1) {
     // Positions only change while the simulation runs or a node is dragged,
@@ -2782,7 +2833,7 @@ function drawUnavailablePulses(ctx: CanvasRenderingContext2D, now: number): void
 
 function draw(): void {
   if (!canvas || !ctx) return;
-  const dpr = devicePixelRatio;
+  const dpr = renderScale();
 
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = settings.backgroundColor;
@@ -3024,6 +3075,7 @@ function onMouseUp(e: MouseEvent): void {
     dragNode = null;
   }
   panning = false;
+  ensureLoop();
 }
 
 function getHaUrl(): string {

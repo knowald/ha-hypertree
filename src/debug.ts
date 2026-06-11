@@ -98,6 +98,13 @@ let lastFrameTime = 0;
 
 export function updateFps(now: number): void {
   if (!fpsEl) return;
+  if (lastFpsTime === 0) {
+    // First frame after init or idle: start a fresh measurement window.
+    lastFpsTime = now;
+    lastFrameTime = now;
+    frameCount = 0;
+    return;
+  }
   frameCount++;
   const frameTime = lastFrameTime ? now - lastFrameTime : 0;
   lastFrameTime = now;
@@ -109,6 +116,13 @@ export function updateFps(now: number): void {
     frameCount = 0;
     lastFpsTime = now;
   }
+}
+
+export function markFpsIdle(): void {
+  if (fpsEl) fpsEl.textContent = "FPS: idle";
+  lastFpsTime = 0;
+  lastFrameTime = 0;
+  frameCount = 0;
 }
 
 export function initDebugConsole(): void {

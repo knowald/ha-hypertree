@@ -5,6 +5,9 @@
 ### Changed
 
 - Cache label text metrics, constellation centroid lines, and pulse-wave fields between frames to cut per-frame canvas work
+- Stop the render loop while the graph is idle (simulation settled, no effects, twinkle off); interaction, state changes, and settings edits wake it, and the debug FPS readout shows "idle"
+- Batch constellation edge strokes into one path per color instead of three strokes per edge, which keeps Firefox's canvas GPU acceleration engaged
+- Cap the canvas backing resolution at 2x device pixel ratio
 
 ### Fixed
 
