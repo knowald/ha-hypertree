@@ -1,5 +1,6 @@
 import type { HaState } from "../ha/types";
 import { getRootElement } from "../rootElement";
+import { t } from "../i18n";
 
 let tooltipEl: HTMLDivElement | null = null;
 
@@ -38,9 +39,9 @@ export function showTooltip(
     const state = states.get(entityId);
     html += `<br><span class="tooltip-id">${escapeHtml(entityId)}</span>`;
     if (state) {
-      html += `<br>State: <strong>${escapeHtml(state.state)}</strong>`;
+      html += `<br>${t("State: ")}<strong>${escapeHtml(state.state)}</strong>`;
       const changed = new Date(state.last_changed);
-      html += `<br>Changed: ${changed.toLocaleString()}`;
+      html += `<br>${t("Changed: ")}${changed.toLocaleString()}`;
     }
   }
 

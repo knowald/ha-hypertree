@@ -1,7 +1,8 @@
 import type { Registries } from "../ha/types";
 import type { TreeNode } from "./types";
+import { t, domainLabel } from "../i18n";
 
-const UNASSIGNED_AREA = "Unassigned";
+const UNASSIGNED_AREA = t("Unassigned");
 
 export function buildTree(registries: Registries): TreeNode {
   const { areas, devices, entities } = registries;
@@ -42,7 +43,7 @@ export function buildTree(registries: Registries): TreeNode {
 
   const root: TreeNode = {
     id: "root",
-    label: "Home",
+    label: t("Home"),
     kind: "root",
     children: [],
     parent: null,
@@ -80,7 +81,9 @@ export function buildTree(registries: Registries): TreeNode {
 
       const domainNode: TreeNode = {
         id: `domain:${areaKey}:${domain}`,
-        label: domain,
+        // Display only. `domain` below stays the raw entity_id prefix, which is
+        // what the domain filter and the colour map are keyed by.
+        label: domainLabel(domain),
         kind: "domain",
         domain,
         children: [],
@@ -116,7 +119,7 @@ export function buildTree(registries: Registries): TreeNode {
   return root;
 }
 
-const NO_DEVICE = "No device";
+const NO_DEVICE = t("No device");
 
 export function buildTreeByDevice(registries: Registries): TreeNode {
   const { areas, devices, entities } = registries;
@@ -156,7 +159,7 @@ export function buildTreeByDevice(registries: Registries): TreeNode {
 
   const root: TreeNode = {
     id: "root",
-    label: "Home",
+    label: t("Home"),
     kind: "root",
     children: [],
     parent: null,

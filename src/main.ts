@@ -4,6 +4,7 @@ import type { HaState } from "./ha/types";
 import type { Connection } from "home-assistant-js-websocket";
 import { initDebugConsole, debugLog } from "./debug";
 import { startSession, showLoading } from "./session";
+import { t } from "./i18n";
 
 const loginContainer = document.getElementById("login")!;
 const treeContainer = document.getElementById("tree")!;
@@ -18,8 +19,8 @@ const savedCreds = loadCredentials();
 if (savedCreds) {
   loginContainer.hidden = true;
   treeContainer.hidden = false;
-  showLoading(treeContainer, "Connecting...");
-  debugLog("auth", "Auto-connecting with saved credentials");
+  showLoading(treeContainer, t("Connecting..."));
+  debugLog(t("auth"), t("Auto-connecting with saved credentials"));
   handleLogin(savedCreds, true);
 } else {
   renderLoginForm(loginContainer, handleLogin);
@@ -33,7 +34,7 @@ async function handleLogin(creds: LoginCredentials, autoConnect = false) {
     const button = loginContainer.querySelector("button");
     if (button) {
       button.disabled = true;
-      button.textContent = "Connecting...";
+      button.textContent = t("Connecting...");
     }
   }
 
@@ -44,13 +45,13 @@ async function handleLogin(creds: LoginCredentials, autoConnect = false) {
     loginContainer.hidden = true;
 
     treeContainer.hidden = false;
-    showLoading(treeContainer, "Loading registries...");
+    showLoading(treeContainer, t("Loading registries..."));
 
-    debugLog("auth", "Connected to " + normalizeUrl(creds.url));
+    debugLog(t("auth"), t("Connected to {url}", { url: normalizeUrl(creds.url) }));
     await initTree(connection);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Connection failed";
-    debugLog("auth", "Connection failed: " + message);
+    const message = err instanceof Error ? err.message : t("Connection failed");
+    debugLog(t("auth"), t("Connection failed: {msg}", { msg: message }));
 
     if (autoConnect) {
       treeContainer.hidden = true;
@@ -62,7 +63,7 @@ async function handleLogin(creds: LoginCredentials, autoConnect = false) {
       const button = loginContainer.querySelector("button");
       if (button) {
         button.disabled = false;
-        button.textContent = "Connect";
+        button.textContent = t("Connect");
       }
       showLoginError(loginContainer, message);
     }
@@ -81,7 +82,7 @@ async function initTree(connection: Connection) {
       teardownSession = null;
       activeConnection?.close();
       activeConnection = null;
-      showLoading(treeContainer, "Connecting...");
+      showLoading(treeContainer, t("Connecting..."));
       // autoConnect mode recovers to the login form on failure; the regular
       // path would try to update a login button that is not on screen here.
       handleLogin(creds, true);
@@ -95,7 +96,7 @@ async function initTree(connection: Connection) {
       treeContainer.innerHTML = "";
       loginContainer.hidden = false;
       renderLoginForm(loginContainer, handleLogin);
-      showLoginError(loginContainer, "Authentication failed, please log in again");
+      showLoginError(loginContainer, t("Authentication failed, please log in again"));
     },
   });
   teardownSession = teardown;

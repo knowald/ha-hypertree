@@ -1,4 +1,5 @@
 import { getRootElement } from "./rootElement";
+import { t } from "./i18n";
 
 export function showStatusBar(text: string): void {
   removeStatusBar();
@@ -19,7 +20,7 @@ export function setStatusDisconnected(disconnected: boolean): void {
     if (statusEl.classList.contains("disconnected")) return;
     statusEl.classList.add("disconnected");
     statusEl.dataset.idleText = statusEl.textContent ?? "";
-    statusEl.textContent = "Connection lost, reconnecting...";
+    statusEl.textContent = t("Connection lost, reconnecting...");
   } else {
     statusEl.classList.remove("disconnected");
     if (statusEl.dataset.idleText !== undefined) {

@@ -1,5 +1,6 @@
 import type { Connection } from "home-assistant-js-websocket";
 import { debugLog } from "../debug";
+import { t } from "../i18n";
 
 export type AutomationRelation = "trigger" | "condition" | "action";
 
@@ -83,7 +84,7 @@ export async function fetchAutomationEdges(
       const result = results[j];
       if (result.status !== "fulfilled") {
         rejected++;
-        if (rejected === 1) debugLog("system", `Automation: first rejection for ${batch[j]}`, describeReason(result.reason));
+        if (rejected === 1) debugLog(t("system"), t("Automation: first rejection for {id}", { id: batch[j] }), describeReason(result.reason));
         continue;
       }
       fulfilled++;
@@ -93,7 +94,7 @@ export async function fetchAutomationEdges(
       const config: AutomationConfig = (raw as AutomationConfigResponse).config ?? (raw as AutomationConfig);
       const entityId = batch[j];
 
-      if (fulfilled === 1) debugLog("system", `Automation: sample config keys`, Object.keys(config).join(", "));
+      if (fulfilled === 1) debugLog(t("system"), t("Automation: sample config keys"), Object.keys(config).join(", "));
 
       const sections: { items: unknown[] | undefined; relation: AutomationRelation }[] = [
         { items: config.trigger ?? config.triggers, relation: "trigger" },
@@ -112,12 +113,12 @@ export async function fetchAutomationEdges(
         }
       }
     }
-    debugLog("system", `Automation: batch ${i / BATCH_SIZE + 1}: ${fulfilled} ok, ${rejected} failed`);
+    debugLog(t("system"), t("Automation: batch {n}: {ok} ok, {failed} failed", { n: i / BATCH_SIZE + 1, ok: fulfilled, failed: rejected }));
     // A fully failed batch usually means the connection or permissions are
     // gone; the remaining batches would fail the same way.
     if (fulfilled === 0 && rejected > 0) {
       const failedCount = automationEntityIds.length - i;
-      debugLog("system", `Automation: aborting, ${failedCount} automations not loaded`);
+      debugLog(t("system"), t("Automation: aborting, {n} automations not loaded", { n: failedCount }));
       onAbort?.(failedCount);
       break;
     }

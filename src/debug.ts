@@ -1,4 +1,5 @@
 import { getRootElement } from "./rootElement";
+import { t } from "./i18n";
 
 let panel: HTMLElement | null = null;
 let logList: HTMLElement | null = null;
@@ -19,16 +20,16 @@ function ensurePanel(): void {
   header.className = "debug-header";
 
   const title = document.createElement("span");
-  title.textContent = "Debug Console";
+  title.textContent = t("Debug Console");
 
   const clearBtn = document.createElement("button");
-  clearBtn.textContent = "Clear";
+  clearBtn.textContent = t("Clear");
   clearBtn.addEventListener("click", () => {
     if (logList) logList.innerHTML = "";
   });
 
   const closeBtn = document.createElement("button");
-  closeBtn.textContent = "Close";
+  closeBtn.textContent = t("Close");
   closeBtn.addEventListener("click", () => toggle());
 
   header.append(title, clearBtn, closeBtn);
@@ -117,14 +118,14 @@ export function updateFps(now: number): void {
   if (now - lastFpsTime >= 500) {
     const elapsed = now - lastFpsTime;
     const fps = Math.round((frameCount / elapsed) * 1000);
-    fpsEl.textContent = `FPS: ${fps}  |  Frame: ${frameTime.toFixed(1)}ms`;
+    fpsEl.textContent = t("FPS: {fps}  |  Frame: {ms}ms", { fps, ms: frameTime.toFixed(1) });
     frameCount = 0;
     lastFpsTime = now;
   }
 }
 
 export function markFpsIdle(): void {
-  if (fpsEl) fpsEl.textContent = "FPS: idle";
+  if (fpsEl) fpsEl.textContent = t("FPS: idle");
   lastFpsTime = 0;
   lastFrameTime = 0;
   frameCount = 0;
@@ -132,5 +133,5 @@ export function markFpsIdle(): void {
 
 export function initDebugConsole(): void {
   ensurePanel();
-  debugLog("system", "Debug console initialized");
+  debugLog(t("system"), t("Debug console initialized"));
 }

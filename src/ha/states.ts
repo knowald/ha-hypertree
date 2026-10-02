@@ -1,6 +1,7 @@
 import type { Connection } from "home-assistant-js-websocket";
 import type { HaState } from "./types";
 import { debugLog } from "../debug";
+import { t } from "../i18n";
 
 export interface StateConsumer {
   updateStates(states: Map<string, HaState>): void;
@@ -25,7 +26,7 @@ export function subscribeToStates(
       const newState = event.data?.new_state;
       if (newState) {
         const oldValue = event.data.old_state?.state ?? "n/a";
-        debugLog("state", newState.entity_id, `${oldValue} -> ${newState.state}`);
+        debugLog(t("state"), newState.entity_id, `${oldValue} -> ${newState.state}`);
         states.set(newState.entity_id, newState);
         viz.updateStates(states);
         viz.onEntityChanged(newState.entity_id, oldValue);
@@ -55,10 +56,10 @@ export async function fetchAllStates(
       states.set(state.entity_id, state);
     }
     viz.updateStates(states);
-    debugLog("system", `Received ${stateList.length} states`);
+    debugLog(t("system"), t("Received {n} states", { n: stateList.length }));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    debugLog("system", "Failed to fetch states: " + message);
+    debugLog(t("system"), t("Failed to fetch states: {msg}", { msg: message }));
   }
 }
 
@@ -71,19 +72,19 @@ export function watchConnection(
   }
 ): () => void {
   const onDisconnected = () => {
-    debugLog("system", "Connection lost, reconnecting...");
+    debugLog(t("system"), t("Connection lost, reconnecting..."));
     handlers.onDisconnected();
   };
   // Fires on every successful reconnect; listeners are attached after the
   // initial connect, so the initial connection does not trigger it.
   const onReady = () => {
-    debugLog("system", "Connection restored");
+    debugLog(t("system"), t("Connection restored"));
     handlers.onReady();
   };
   // The library only emits reconnect-error for fatal auth failures;
   // other errors keep retrying with backoff.
   const onReconnectError = () => {
-    debugLog("auth", "Reconnection failed: invalid authentication");
+    debugLog(t("auth"), t("Reconnection failed: invalid authentication"));
     handlers.onAuthFailed?.();
   };
 

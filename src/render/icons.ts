@@ -2,6 +2,7 @@
 // falls back to the public Iconify API (standalone mode).
 
 import { debugLog } from "../debug";
+import { t } from "../i18n";
 
 const HA_DOMAIN_ICONS: Record<string, string> = {
   light: "mdi:lightbulb",
@@ -150,11 +151,11 @@ async function resolveIcon(name: string): Promise<void> {
   }
   if (icon) {
     iconCache.set(name, icon);
-    debugLog("system", `Icon resolved via ${source}: ${name} (vb ${icon.viewBox})`);
+    debugLog(t("system"), t("Icon resolved via {source}: {name} (vb {box})", { source, name, box: icon.viewBox }));
     if (onIconResolved) onIconResolved();
     return;
   }
-  debugLog("system", `Icon unresolved: ${name}`);
+  debugLog(t("system"), t("Icon unresolved: {name}", { name }));
   iconCache.set(name, null);
 }
 

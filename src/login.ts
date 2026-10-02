@@ -1,3 +1,5 @@
+import { t } from "./i18n";
+
 export interface LoginCredentials {
   url: string;
   token: string;
@@ -15,35 +17,35 @@ export function renderLoginForm(
     <form id="login-form">
       <img src="/icon.png" alt="" width="64" height="64" class="login-icon" />
       <h1>HA Hypertree</h1>
-      <p>Connect to your Home Assistant instance</p>
+      <p>${t("Connect to your Home Assistant instance")}</p>
       <label>
-        Home Assistant URL
+        ${t("Home Assistant URL")}
         <input type="url" id="ha-url" placeholder="https://homeassistant.local:8123" required />
       </label>
       <label>
-        Long-Lived Access Token
+        ${t("Long-Lived Access Token")}
         <input type="password" id="ha-token" placeholder="eyJhbGciOi..." required />
       </label>
       <p id="protocol-warning" class="protocol-warning" hidden></p>
-      <button type="submit">Connect</button>
+      <button type="submit">${t("Connect")}</button>
       <p id="login-error" class="error" hidden></p>
       ${import.meta.env.VITE_HIDE_EXPLAINER !== "true" ? `
       <details class="token-explainer">
-        <summary>Hold on, should I give you my token?</summary>
+        <summary>${t("Hold on, should I give you my token?")}</summary>
         <p>
-          Darn it, no, but I almost got you.
+          ${t("Darn it, no, but I almost got you.")}
         </p>
         <p>
-          Just kidding - but seriously,
-          never lose that reflex.
+          ${t("Just kidding - but seriously,")}
+          ${t("never lose that reflex.")}
         </p>
         <p>
-          This app is entirely client-side. Your token connects your browser
-          directly to your Home Assistant via WebSocket, and that's the end of
-          the road. No backend, no analytics, no telemetry, no cloud, no nothing.
+          ${t("This app is entirely client-side. Your token connects your browser")}
+          ${t("directly to your Home Assistant via WebSocket, and that's the end of")}
+          ${t("the road. No backend, no analytics, no telemetry, no cloud, no nothing.")}
         </p>
         <p>
-          Then again, what if this whole paragraph is just a really convincing bluff? Fair point. The <a href="https://github.com/knowald/ha-hypertree" target="_blank" rel="noopener">source code</a> is open - clone it, run it locally, verify it yourself. Words are cheap, code doesn't lie. Stay sharp out there.
+          ${t("Then again, what if this whole paragraph is just a really convincing bluff? Fair point. The")} <a href="https://github.com/knowald/ha-hypertree" target="_blank" rel="noopener">${t("source code")}</a> ${t("is open - clone it, run it locally, verify it yourself. Words are cheap, code doesn't lie. Stay sharp out there.")}
         </p>
       </details>
       ` : ""}
@@ -65,10 +67,11 @@ export function renderLoginForm(
     if (pageIsHttps && targetIsHttp) {
       const httpPage = location.href.replace(/^https:/, "http:");
       protocolWarning.innerHTML =
-        `Your browser blocks insecure WebSocket connections from HTTPS pages. ` +
-        `Try <a href="${httpPage}">switching to HTTP</a> to connect to a local HA instance. ` +
-        `If your browser redirects you back to HTTPS, manually replace ` +
-        `<code>https</code> with <code>http</code> in your address bar.`;
+        t("Your browser blocks insecure WebSocket connections from HTTPS pages. ") +
+        t("Try ") + `<a href="${httpPage}">${t("switching to HTTP")}</a>` +
+        t(" to connect to a local HA instance. ") +
+        t("If your browser redirects you back to HTTPS, manually replace ") +
+        `<code>https</code> → <code>http</code> ${t("in your address bar.")}`;
       protocolWarning.hidden = false;
     } else {
       protocolWarning.hidden = true;

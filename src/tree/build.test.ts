@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { buildTree, buildTreeByDevice, flattenTree } from "./build";
 import type { Registries, HaEntityRegistryEntry } from "../ha/types";
+// The synthetic area/device labels and the domain node labels are localised,
+// so the expectations have to ask for the same strings rather than hardcode
+// English.
+import { t, domainLabel } from "../i18n";
 
 function entity(overrides: Partial<HaEntityRegistryEntry> & { entity_id: string }): HaEntityRegistryEntry {
   return {
@@ -37,14 +41,25 @@ const registries: Registries = {
 describe("buildTree", () => {
   const root = buildTree(registries);
 
-  it("sorts areas alphabetically with Unassigned last", () => {
-    expect(root.children.map((a) => a.label)).toEqual(["Bedroom", "Kitchen", "Unassigned"]);
+  it("sorts areas alphabetically with the unassigned bucket last", () => {
+    expect(root.children.map((a) => a.label)).toEqual(["Bedroom", "Kitchen", t("Unassigned")]);
   });
 
   it("groups entities by domain under each area, domains sorted", () => {
     const kitchen = root.children[1];
-    expect(kitchen.children.map((d) => d.label)).toEqual(["light", "sensor"]);
+    expect(kitchen.children.map((d) => d.label)).toEqual([
+      domainLabel("light"),
+      domainLabel("sensor"),
+    ]);
     expect(kitchen.children[0].kind).toBe("domain");
+  });
+
+  it("keeps the raw domain on the node even though the label is localised", () => {
+    // The domain filter, the per-domain colour map and hiddenDomains are all
+    // keyed by the English domain, so the label must not leak into them.
+    const kitchen = root.children[1];
+    expect(kitchen.children.map((d) => d.domain)).toEqual(["light", "sensor"]);
+    expect(kitchen.children[0].id).toBe("domain:kitchen:light");
   });
 
   it("assigns the device's area to entities without their own area_id", () => {
@@ -53,7 +68,7 @@ describe("buildTree", () => {
     expect(lightDomain.children.map((e) => e.entityId)).toEqual(["light.kitchen_ceiling"]);
   });
 
-  it("puts entities without area or device under Unassigned", () => {
+  it("puts entities without area or device under the unassigned bucket", () => {
     const unassigned = root.children[2];
     expect(flattenTree(unassigned).filter((n) => n.kind === "entity").map((n) => n.entityId)).toEqual([
       "switch.orphan",
@@ -90,9 +105,9 @@ describe("buildTree", () => {
 describe("buildTreeByDevice", () => {
   const root = buildTreeByDevice(registries);
 
-  it("groups entities by device with No device last", () => {
+  it("groups entities by device with the no-device bucket last", () => {
     const bedroom = root.children[0];
-    expect(bedroom.children.map((d) => d.label)).toEqual(["Renamed Hub", "No device"]);
+    expect(bedroom.children.map((d) => d.label)).toEqual(["Renamed Hub", t("No device")]);
     expect(bedroom.children[0].kind).toBe("device");
   });
 

@@ -7,6 +7,7 @@ import { debugLog } from "./debug";
 import { subscribeToStates, fetchAllStates, watchConnection } from "./ha/states";
 import { showStatusBar, removeStatusBar, setStatusDisconnected } from "./statusBar";
 import { createForceViz } from "./viz/force";
+import { t } from "./i18n";
 
 export interface SessionOptions {
   connection: Connection;
@@ -53,8 +54,8 @@ export async function startSession(options: SessionOptions): Promise<(() => void
     onAuthFailed: options.onAuthFailed,
   });
 
-  debugLog("system", `Loaded ${nodeCount} nodes across ${registries.areas.length} areas`);
-  showStatusBar(`${nodeCount} nodes | ${registries.areas.length} areas`);
+  debugLog(t("system"), t("Loaded {n} nodes across {a} areas", { n: nodeCount, a: registries.areas.length }));
+  showStatusBar(t("{n} nodes | {a} areas", { n: nodeCount, a: registries.areas.length }));
 
   return () => {
     unsubscribeStates();

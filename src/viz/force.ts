@@ -4,7 +4,9 @@ import type { HaState, Registries } from "../ha/types";
 import { showTooltip, hideTooltip } from "../render/tooltip";
 import { nodeColor, randomizeColors, resetColors, getDomainColors, setDomainColors, setDomainColor, domainList } from "../render/colors";
 import { getEntityIconName, getCachedIcon, requestIcon, setIconResolveCallback } from "../render/icons";
-import { createTransform, applyWheel, zoomAt, screenToWorld, type ZoomTransform } from "./zoom";
+import { createTransform, applyWheel, zoomAt, screenToWorld, fitTransform, type ZoomTransform } from "./zoom";
+import { limitStep as limitStepVec, needsRescue } from "./stability";
+import { t, optionLabel, domainLabel, domainTitle } from "../i18n";
 import { buildTree, buildTreeByDevice, flattenTree } from "../tree/build";
 import { loadCredentials, saveCredentials } from "../login";
 import { getRootElement } from "../rootElement";
@@ -185,7 +187,9 @@ function getGlowSprite(profile: GlowSpriteProfile, glowColor: string): Offscreen
   return sprite;
 }
 
-const FONT_FAMILY = "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif";
+// CJK faces are listed before the generic fallback so Chinese labels and
+// settings text resolve to a real CJK font instead of a browser-chosen one.
+const FONT_FAMILY = "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"PingFang SC\", \"Microsoft YaHei\", \"Noto Sans CJK SC\", \"Source Han Sans SC\", sans-serif";
 
 // Cache measureText results, which are costly per label per frame. Metrics do
 // NOT scale linearly with font size on macOS (San Francisco applies
@@ -703,7 +707,7 @@ function syncSettingsState(controls: SettingsControls): void {
 
 function createSettings(container: HTMLElement): { toolbar: HTMLDivElement } {
   const { toolbar, searchInput, settingsDropdown, filterDropdown } = buildToolbar(container);
-  const [viewTab, styleTab, advancedTab] = buildTabs(settingsDropdown, ["View", "Style", "Advanced"]);
+  const [viewTab, styleTab, advancedTab] = buildTabs(settingsDropdown, [t("View"), t("Style"), t("Advanced")]);
 
   const context: SettingsContext = {
     container,
@@ -734,7 +738,7 @@ function buildToolbar(container: HTMLElement): {
   const searchInput = document.createElement("input");
   searchInput.type = "text";
   searchInput.className = "canvas-toolbar-search";
-  searchInput.placeholder = "Search entities...";
+  searchInput.placeholder = t("Search entities...");
   searchInput.value = searchQuery;
   let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   searchInput.addEventListener("input", () => {
@@ -751,20 +755,29 @@ function buildToolbar(container: HTMLElement): {
   const filterBtn = document.createElement("button");
   filterBtn.className = "canvas-toolbar-btn";
   filterBtn.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M1 2.5A.5.5 0 0 1 1.5 2h13a.5.5 0 0 1 .4.8L10 9v4.5a.5.5 0 0 1-.7.4L7 12.5V9L1.1 2.8A.5.5 0 0 1 1 2.5z"/></svg>';
-  filterBtn.title = "Filters";
+  filterBtn.title = t("Filters");
   toolbar.appendChild(filterBtn);
 
   const resetPosBtn = document.createElement("button");
   resetPosBtn.className = "canvas-toolbar-btn";
   resetPosBtn.textContent = "\u21bb";
-  resetPosBtn.title = "Reset positions";
+  resetPosBtn.title = t("Reset positions");
   resetPosBtn.addEventListener("click", () => rebuildGraph());
   toolbar.appendChild(resetPosBtn);
+
+  // The escape hatch for a lost view: the layout can settle outside the
+  // viewport, and neither Reset positions nor a zoom limit gets it back.
+  const fitBtn = document.createElement("button");
+  fitBtn.className = "canvas-toolbar-btn";
+  fitBtn.title = t("Fit view to graph");
+  fitBtn.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 5.5v-4h4"/><path d="M14.5 5.5v-4h-4"/><path d="M1.5 10.5v4h4"/><path d="M14.5 10.5v4h-4"/></svg>';
+  fitBtn.addEventListener("click", () => fitAll());
+  toolbar.appendChild(fitBtn);
 
   const gearBtn = document.createElement("button");
   gearBtn.className = "canvas-toolbar-btn";
   gearBtn.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><rect x="1" y="2.5" width="14" height="1.5" rx="0.75"/><rect x="1" y="7.25" width="14" height="1.5" rx="0.75"/><rect x="1" y="12" width="14" height="1.5" rx="0.75"/><circle cx="5" cy="3.25" r="2" fill="var(--surface)" stroke="currentColor" stroke-width="1.2"/><circle cx="11" cy="8" r="2" fill="var(--surface)" stroke="currentColor" stroke-width="1.2"/><circle cx="6.5" cy="12.75" r="2" fill="var(--surface)" stroke="currentColor" stroke-width="1.2"/></svg>';
-  gearBtn.title = "Settings";
+  gearBtn.title = t("Settings");
   toolbar.appendChild(gearBtn);
 
   const settingsDropdown = document.createElement("div");
@@ -846,27 +859,27 @@ function makeSubOptions(hidden: boolean): HTMLDivElement {
 function buildViewTab(tab: HTMLDivElement, context: SettingsContext): void {
   const controls = context.controls;
 
-  tab.appendChild(makeSegmented("Structure", ["domain", "device"], settings.structureMode, (v) => {
+  tab.appendChild(makeSegmented(t("Structure"), ["domain", "device"], settings.structureMode, (v) => {
     settings.structureMode = v as StructureMode;
     rebuildWithStructure();
     saveSettings();
   }));
 
-  tab.appendChild(makeSegmented("Layout", ["tree", "scatter"], settings.initialLayout, (v) => {
+  tab.appendChild(makeSegmented(t("Layout"), ["tree", "scatter"], settings.initialLayout, (v) => {
     settings.initialLayout = v as InitialLayout;
     rebuildGraph();
     saveSettings();
-  }, "Initial node positions: tree (structured) or scatter (random)"));
+  }, t("Initial node positions: tree (structured) or scatter (random)")));
 
   const styleGroup = document.createElement("div");
   styleGroup.className = "visual-mode-group";
   const constellationSubOptions = makeSubOptions(!settings.constellation);
 
-  styleGroup.appendChild(makeSegmented("Style", ["dots", "stars"], settings.constellation ? "stars" : "dots", (v) => {
+  styleGroup.appendChild(makeSegmented(t("Style"), ["dots", "stars"], settings.constellation ? "stars" : "dots", (v) => {
     settings.constellation = v === "stars";
     constellationSubOptions.hidden = !settings.constellation;
     saveSettings();
-  }, "Render nodes as plain dots or glowing stars"));
+  }, t("Render nodes as plain dots or glowing stars")));
   styleGroup.appendChild(constellationSubOptions);
   tab.appendChild(styleGroup);
 
@@ -905,34 +918,34 @@ function buildViewTab(tab: HTMLDivElement, context: SettingsContext): void {
     radio.checked = mode === currentVisualMode;
     radio.addEventListener("change", () => applyVisualMode(mode));
     label.appendChild(radio);
-    label.appendChild(document.createTextNode(mode.charAt(0).toUpperCase() + mode.slice(1)));
+    label.appendChild(document.createTextNode(optionLabel(mode)));
     visualModeGroup.appendChild(label);
 
     if (mode === "hulls") visualModeGroup.appendChild(hullSubOptions);
     if (mode === "automations") visualModeGroup.appendChild(automationSubOptions);
   }
 
-  constellationSubOptions.appendChild(makeSlider("Brightness", 0, 3, settings.glowBrightness, 0.1, (v) => { settings.glowBrightness = v; saveSettings(); }, "Overall star and edge opacity"));
-  constellationSubOptions.appendChild(makeSlider("Star size", 0.2, 3, settings.starSize, 0.1, (v) => { settings.starSize = v; saveSettings(); }));
-  constellationSubOptions.appendChild(makeSlider("Halo intensity", 0.2, 3, settings.glowIntensity, 0.1, (v) => { settings.glowIntensity = v; saveSettings(); }, "Glow gradient spread and strength"));
-  constellationSubOptions.appendChild(makeSlider("Halo size", 2, 16, settings.glowSize, 0.5, (v) => { settings.glowSize = v; saveSettings(); }, "Base glow radius around stars"));
-  constellationSubOptions.appendChild(makeSlider("Parent halo", 0.2, 5, settings.parentGlowIntensity, 0.1, (v) => { settings.parentGlowIntensity = v; saveSettings(); }, "Halo for area, domain, and device nodes"));
-  constellationSubOptions.appendChild(makeSlider("Effect scale", 0.5, 5, settings.effectScale, 0.1, (v) => { settings.effectScale = v; saveSettings(); }, "Size of state-change effects"));
-  constellationSubOptions.appendChild(makeSlider("Twinkle speed", 0, 5, settings.twinkleSpeed, 0.1, (v) => { settings.twinkleSpeed = v; saveSettings(); }));
-  constellationSubOptions.appendChild(makeSlider("Twinkle size", 0, 1, settings.twinkleSize, 0.05, (v) => { settings.twinkleSize = v; saveSettings(); }, "Halo radius pulsing with twinkle"));
-  constellationSubOptions.appendChild(makeSlider("Twinkle floor", 0, 1, settings.twinkleMin, 0.05, (v) => { settings.twinkleMin = v; saveSettings(); }, "Minimum brightness during twinkle dip"));
-  constellationSubOptions.appendChild(makeSlider("Halo spread", 0, 1, settings.haloFalloff, 0.05, (v) => { settings.haloFalloff = v; saveSettings(); }, "Gaussian halo width: low = tight bright peak, high = broad soft glow"));
-  constellationSubOptions.appendChild(makeSelect("Effect",
+  constellationSubOptions.appendChild(makeSlider(t("Brightness"), 0, 3, settings.glowBrightness, 0.1, (v) => { settings.glowBrightness = v; saveSettings(); }, t("Overall star and edge opacity")));
+  constellationSubOptions.appendChild(makeSlider(t("Star size"), 0.2, 3, settings.starSize, 0.1, (v) => { settings.starSize = v; saveSettings(); }));
+  constellationSubOptions.appendChild(makeSlider(t("Halo intensity"), 0.2, 3, settings.glowIntensity, 0.1, (v) => { settings.glowIntensity = v; saveSettings(); }, t("Glow gradient spread and strength")));
+  constellationSubOptions.appendChild(makeSlider(t("Halo size"), 2, 16, settings.glowSize, 0.5, (v) => { settings.glowSize = v; saveSettings(); }, t("Base glow radius around stars")));
+  constellationSubOptions.appendChild(makeSlider(t("Parent halo"), 0.2, 5, settings.parentGlowIntensity, 0.1, (v) => { settings.parentGlowIntensity = v; saveSettings(); }, t("Halo for area, domain, and device nodes")));
+  constellationSubOptions.appendChild(makeSlider(t("Effect scale"), 0.5, 5, settings.effectScale, 0.1, (v) => { settings.effectScale = v; saveSettings(); }, t("Size of state-change effects")));
+  constellationSubOptions.appendChild(makeSlider(t("Twinkle speed"), 0, 5, settings.twinkleSpeed, 0.1, (v) => { settings.twinkleSpeed = v; saveSettings(); }));
+  constellationSubOptions.appendChild(makeSlider(t("Twinkle size"), 0, 1, settings.twinkleSize, 0.05, (v) => { settings.twinkleSize = v; saveSettings(); }, t("Halo radius pulsing with twinkle")));
+  constellationSubOptions.appendChild(makeSlider(t("Twinkle floor"), 0, 1, settings.twinkleMin, 0.05, (v) => { settings.twinkleMin = v; saveSettings(); }, t("Minimum brightness during twinkle dip")));
+  constellationSubOptions.appendChild(makeSlider(t("Halo spread"), 0, 1, settings.haloFalloff, 0.05, (v) => { settings.haloFalloff = v; saveSettings(); }, t("Gaussian halo width: low = tight bright peak, high = broad soft glow")));
+  constellationSubOptions.appendChild(makeSelect(t("Effect"),
     ["supernova", "shooting-star", "flare", "pulse-wave", "color-shift"],
-    settings.starEffect, (v) => { settings.starEffect = v as StarEffect; saveSettings(); }, "Animation on entity state change"));
+    settings.starEffect, (v) => { settings.starEffect = v as StarEffect; saveSettings(); }, t("Animation on entity state change")));
 
-  hullSubOptions.appendChild(makeSegmented("Grouping", ["area", "domain"], settings.groupBy, (v) => {
+  hullSubOptions.appendChild(makeSegmented(t("Grouping"), ["area", "domain"], settings.groupBy, (v) => {
     settings.groupBy = v as GroupMode;
     rebuildClusters();
     saveSettings();
   }));
 
-  controls.autoOnlyToggle = makeToggle("Automation entities only", settings.automationOnly, (v) => {
+  controls.autoOnlyToggle = makeToggle(t("Automation entities only"), settings.automationOnly, (v) => {
     settings.automationOnly = v;
     saveSettings();
     if (v && !automationLoaded && !automationLoading) {
@@ -940,7 +953,7 @@ function buildViewTab(tab: HTMLDivElement, context: SettingsContext): void {
     } else {
       rebuildGraph();
     }
-  }, "Hide entities not referenced by any automation");
+  }, t("Hide entities not referenced by any automation"));
   automationSubOptions.appendChild(controls.autoOnlyToggle);
 
   onAutomationLoaded = () => {
@@ -952,7 +965,7 @@ function buildViewTab(tab: HTMLDivElement, context: SettingsContext): void {
 
   const entitiesSubOptions = makeSubOptions(!settings.showEntities);
 
-  controls.entitiesToggle = makeToggle("Entities", settings.showEntities, (v) => {
+  controls.entitiesToggle = makeToggle(t("Entities"), settings.showEntities, (v) => {
     settings.showEntities = v;
     entitiesSubOptions.hidden = !v;
     if (!v) {
@@ -972,7 +985,7 @@ function buildViewTab(tab: HTMLDivElement, context: SettingsContext): void {
   });
   tab.appendChild(controls.entitiesToggle);
 
-  controls.unavailableSelect = makeSelect("Unavailable", ["normal", "pulse", "ring", "hidden", "only"], settings.unavailableMode, (v) => {
+  controls.unavailableSelect = makeSelect(t("Unavailable"), ["normal", "pulse", "ring", "hidden", "only"], settings.unavailableMode, (v) => {
     const prev = settings.unavailableMode;
     settings.unavailableMode = v as UnavailableMode;
     if (v === "hidden" || prev === "hidden" || v === "only" || prev === "only") rebuildGraph();
@@ -981,7 +994,7 @@ function buildViewTab(tab: HTMLDivElement, context: SettingsContext): void {
   });
   entitiesSubOptions.appendChild(controls.unavailableSelect);
 
-  controls.appearOnChangeToggle = makeToggle("Appear on change", settings.appearOnChange, (v) => {
+  controls.appearOnChangeToggle = makeToggle(t("Appear on change"), settings.appearOnChange, (v) => {
     settings.appearOnChange = v;
     if (v) {
       settings.showEntities = true;
@@ -992,7 +1005,7 @@ function buildViewTab(tab: HTMLDivElement, context: SettingsContext): void {
     syncSettingsState(controls);
     rebuildGraph();
     saveSettings();
-  }, "Nodes start hidden and appear as state changes arrive");
+  }, t("Nodes start hidden and appear as state changes arrive"));
   entitiesSubOptions.appendChild(controls.appearOnChangeToggle);
   tab.appendChild(entitiesSubOptions);
 }
@@ -1002,16 +1015,20 @@ function buildFilterPanel(dropdown: HTMLDivElement): void {
   filterBody.className = "settings-body";
   dropdown.appendChild(filterBody);
 
-  filterBody.appendChild(makeToggle("Search hides non-matching", settings.searchAsFilter, (v) => {
+  filterBody.appendChild(makeToggle(t("Search hides non-matching"), settings.searchAsFilter, (v) => {
     settings.searchAsFilter = v;
     saveSettings();
     if (searchQuery) rebuildGraph();
-  }, "When enabled, the search bar hides nodes instead of highlighting them"));
+  }, t("When enabled, the search bar hides nodes instead of highlighting them")));
 
-  const domains = domainList().sort();
+  const domains = domainList();
   filterBody.appendChild(makeFilterSection(
-    "Domains",
-    domains.map((d) => ({ id: d, label: d })),
+    t("Domains"),
+    // Sort by the rendered label so the Chinese list is in pinyin order, but
+    // keep `id` as the raw domain - that is what hiddenDomains stores.
+    domains
+      .map((d) => ({ id: d, label: domainLabel(d) }))
+      .sort((a, b) => a.label.localeCompare(b.label, "zh-CN")),
     () => settings.hiddenDomains,
     (ids) => { settings.hiddenDomains = ids; },
   ));
@@ -1020,20 +1037,20 @@ function buildFilterPanel(dropdown: HTMLDivElement): void {
     .filter((c) => c.kind === "area")
     .sort((a, b) => a.label.localeCompare(b.label));
   filterBody.appendChild(makeFilterSection(
-    "Areas",
+    t("Areas"),
     areas.map((a) => ({ id: a.id.replace(/^area:/, ""), label: a.label })),
     () => settings.hiddenAreas,
     (ids) => { settings.hiddenAreas = ids; },
   ));
 
-  const stateSection = makeSection("State");
+  const stateSection = makeSection(t("State"));
 
   const stateInputWrap = document.createElement("div");
   stateInputWrap.style.cssText = "position:relative";
   const stateInput = document.createElement("input");
   stateInput.type = "text";
   stateInput.className = "force-search";
-  stateInput.placeholder = "Filter by state (e.g. on, off)";
+  stateInput.placeholder = t("Filter by state (e.g. on, off)");
   stateInput.value = settings.stateFilter;
   const stateClearBtn = document.createElement("button");
   stateClearBtn.textContent = "\u00d7";
@@ -1073,11 +1090,11 @@ function makeFilterSection(
   actions.className = "filter-actions";
   const allBtn = document.createElement("button");
   allBtn.className = "force-reset-btn";
-  allBtn.textContent = "All";
+  allBtn.textContent = t("All");
   allBtn.style.cssText = "flex:1;padding:0.2rem 0";
   const noneBtn = document.createElement("button");
   noneBtn.className = "force-reset-btn";
-  noneBtn.textContent = "None";
+  noneBtn.textContent = t("None");
   noneBtn.style.cssText = "flex:1;padding:0.2rem 0";
   actions.appendChild(allBtn);
   actions.appendChild(noneBtn);
@@ -1129,41 +1146,41 @@ function makeFilterSection(
 }
 
 function buildStyleTab(tab: HTMLDivElement, context: SettingsContext): void {
-  tab.appendChild(makeToggle("Labels", settings.showLabels, (v) => { settings.showLabels = v; saveSettings(); }));
+  tab.appendChild(makeToggle(t("Labels"), settings.showLabels, (v) => { settings.showLabels = v; saveSettings(); }));
   tab.appendChild(makeToggle(
-    "Structure labels",
+    t("Structure labels"),
     settings.showStructureLabels,
     (v) => { settings.showStructureLabels = v; saveSettings(); },
-    "Show labels on grouping nodes (domains in domain mode, devices in device mode)"
+    t("Show labels on grouping nodes (domains in domain mode, devices in device mode)")
   ));
   tab.appendChild(makeToggle(
-    "Entity icons",
+    t("Entity icons"),
     settings.showIcons,
     (v) => { settings.showIcons = v; saveSettings(); },
-    "Render Material Design Icons on entity nodes (resolved from Home Assistant)"
+    t("Render Material Design Icons on entity nodes (resolved from Home Assistant)")
   ));
-  context.controls.changedOnlyToggle = makeToggle("Skip unchanged", settings.changedOnly, (v) => {
+  context.controls.changedOnlyToggle = makeToggle(t("Skip unchanged"), settings.changedOnly, (v) => {
     settings.changedOnly = v;
     saveSettings();
-  }, "Skip glow when state value hasn't changed");
+  }, t("Skip glow when state value hasn't changed"));
   tab.appendChild(context.controls.changedOnlyToggle);
 
-  tab.appendChild(makeSlider("Label size", 4, 24, settings.labelSize, 1, (v) => { settings.labelSize = v; saveSettings(); }));
-  tab.appendChild(makeSlider("Entity label zoom", 0.5, 5, settings.entityLabelZoom, 0.1, (v) => { settings.entityLabelZoom = v; saveSettings(); }, "Zoom level to show entity labels"));
-  tab.appendChild(makeSlider("Entity dot size", 1, 16, settings.entityDotSize, 0.5, (v) => {
+  tab.appendChild(makeSlider(t("Label size"), 4, 24, settings.labelSize, 1, (v) => { settings.labelSize = v; saveSettings(); }));
+  tab.appendChild(makeSlider(t("Entity label zoom"), 0.5, 5, settings.entityLabelZoom, 0.1, (v) => { settings.entityLabelZoom = v; saveSettings(); }, t("Zoom level to show entity labels")));
+  tab.appendChild(makeSlider(t("Entity dot size"), 1, 16, settings.entityDotSize, 0.5, (v) => {
     settings.entityDotSize = v;
     for (const fn of fnodes) {
       if (fn.tree.kind === "entity") fn.r = v;
     }
     saveSettings();
   }));
-  tab.appendChild(makeSlider("Connection brightness", 0, 3, settings.lineGlow, 0.1, (v) => { settings.lineGlow = v; saveSettings(); }, "Opacity of parent-child connection lines"));
+  tab.appendChild(makeSlider(t("Connection brightness"), 0, 3, settings.lineGlow, 0.1, (v) => { settings.lineGlow = v; saveSettings(); }, t("Opacity of parent-child connection lines")));
 
-  const colorsSection = makeSection("Colors");
+  const colorsSection = makeSection(t("Colors"));
 
   const bgSwatch = document.createElement("label");
   bgSwatch.className = "force-color-swatch";
-  bgSwatch.title = "Background";
+  bgSwatch.title = t("Background");
   const bgDot = document.createElement("span");
   bgDot.className = "force-color-dot";
   bgDot.style.background = settings.backgroundColor;
@@ -1178,7 +1195,7 @@ function buildStyleTab(tab: HTMLDivElement, context: SettingsContext): void {
   });
   const bgName = document.createElement("span");
   bgName.className = "force-color-name";
-  bgName.textContent = "background";
+  bgName.textContent = t("background");
   bgSwatch.appendChild(bgDot);
   bgSwatch.appendChild(bgName);
   bgSwatch.appendChild(bgInput);
@@ -1186,10 +1203,13 @@ function buildStyleTab(tab: HTMLDivElement, context: SettingsContext): void {
 
   const colorGrid = document.createElement("div");
   colorGrid.className = "force-color-grid";
-  for (const domain of domainList()) {
+  for (const domain of domainList().sort((a, b) => domainLabel(a).localeCompare(domainLabel(b), "zh-CN"))) {
     const swatch = document.createElement("label");
     swatch.className = "force-color-swatch";
-    swatch.title = domain;
+    // The raw domain is the colour-map key, so it must not live in `title`
+    // any more - that is now the human-readable tooltip.
+    swatch.dataset.domain = domain;
+    swatch.title = domainTitle(domain);
 
     const dot = document.createElement("span");
     dot.className = "force-color-dot";
@@ -1207,7 +1227,7 @@ function buildStyleTab(tab: HTMLDivElement, context: SettingsContext): void {
 
     const name = document.createElement("span");
     name.className = "force-color-name";
-    name.textContent = domain.replace(/_/g, " ");
+    name.textContent = domainLabel(domain);
 
     swatch.appendChild(dot);
     swatch.appendChild(name);
@@ -1220,7 +1240,7 @@ function buildStyleTab(tab: HTMLDivElement, context: SettingsContext): void {
     const colors = getDomainColors();
     for (const swatch of colorGrid.children) {
       const el = swatch as HTMLLabelElement;
-      const d = el.title;
+      const d = el.dataset.domain ?? "";
       const dot = el.querySelector(".force-color-dot") as HTMLSpanElement;
       const inp = el.querySelector("input") as HTMLInputElement;
       if (dot && inp && d in colors) {
@@ -1236,11 +1256,11 @@ function buildStyleTab(tab: HTMLDivElement, context: SettingsContext): void {
 function buildAdvancedTab(tab: HTMLDivElement, context: SettingsContext): void {
   const { container } = context;
 
-  const physicsSection = makeSection("Physics");
-  physicsSection.body.appendChild(makeSlider("Repulsion", 100, 3000, settings.repulsion, 10, (v) => { settings.repulsion = v; reheat(); saveSettings(); }));
-  physicsSection.body.appendChild(makeSlider("Spring length", 10, 120, settings.springLen, 1, (v) => { settings.springLen = v; reheat(); saveSettings(); }));
-  physicsSection.body.appendChild(makeSlider("Spring stiffness", 0.005, 0.15, settings.springK, 0.005, (v) => { settings.springK = v; reheat(); saveSettings(); }, "Pull strength between connected nodes"));
-  physicsSection.body.appendChild(makeSlider("Damping", 0.5, 0.99, settings.damping, 0.01, (v) => { settings.damping = v; reheat(); saveSettings(); }, "Velocity decay per frame"));
+  const physicsSection = makeSection(t("Physics"));
+  physicsSection.body.appendChild(makeSlider(t("Repulsion"), 100, 3000, settings.repulsion, 10, (v) => { settings.repulsion = v; reheat(); saveSettings(); }));
+  physicsSection.body.appendChild(makeSlider(t("Spring length"), 10, 120, settings.springLen, 1, (v) => { settings.springLen = v; reheat(); saveSettings(); }));
+  physicsSection.body.appendChild(makeSlider(t("Spring stiffness"), 0.005, 0.15, settings.springK, 0.005, (v) => { settings.springK = v; reheat(); saveSettings(); }, t("Pull strength between connected nodes")));
+  physicsSection.body.appendChild(makeSlider(t("Damping"), 0.5, 0.99, settings.damping, 0.01, (v) => { settings.damping = v; reheat(); saveSettings(); }, t("Velocity decay per frame")));
   tab.appendChild(physicsSection.el);
 
   const buttons = document.createElement("div");
@@ -1248,7 +1268,7 @@ function buildAdvancedTab(tab: HTMLDivElement, context: SettingsContext): void {
 
   const randomColorBtn = document.createElement("button");
   randomColorBtn.className = "force-reset-btn";
-  randomColorBtn.textContent = "Randomize colors";
+  randomColorBtn.textContent = t("Randomize colors");
   randomColorBtn.addEventListener("click", () => {
     randomizeColors();
     clearColorCaches();
@@ -1259,7 +1279,7 @@ function buildAdvancedTab(tab: HTMLDivElement, context: SettingsContext): void {
 
   const resetAllBtn = document.createElement("button");
   resetAllBtn.className = "force-reset-btn";
-  resetAllBtn.textContent = "Reset all settings";
+  resetAllBtn.textContent = t("Reset all settings");
   resetAllBtn.addEventListener("click", () => {
     resetColors();
     clearColorCaches();
@@ -1281,7 +1301,7 @@ function buildAdvancedTab(tab: HTMLDivElement, context: SettingsContext): void {
 
   const exportBtn = document.createElement("button");
   exportBtn.className = "force-reset-btn";
-  exportBtn.textContent = "Export settings";
+  exportBtn.textContent = t("Export settings");
   exportBtn.addEventListener("click", () => {
     const data = { settings, colors: getDomainColors() };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
@@ -1291,13 +1311,13 @@ function buildAdvancedTab(tab: HTMLDivElement, context: SettingsContext): void {
     a.download = "hypertree-settings.json";
     a.click();
     URL.revokeObjectURL(url);
-    showToast("Settings exported");
+    showToast(t("Settings exported"));
   });
   buttons.appendChild(exportBtn);
 
   const importBtn = document.createElement("button");
   importBtn.className = "force-reset-btn";
-  importBtn.textContent = "Import settings";
+  importBtn.textContent = t("Import settings");
   importBtn.addEventListener("click", () => {
     const input = document.createElement("input");
     input.type = "file";
@@ -1314,9 +1334,9 @@ function buildAdvancedTab(tab: HTMLDivElement, context: SettingsContext): void {
           removeSettings();
           settingsPanel = createSettings(container);
           rebuildWithStructure();
-          showToast("Settings imported");
+          showToast(t("Settings imported"));
         } catch {
-          showToast("Invalid settings file");
+          showToast(t("Invalid settings file"));
         }
       });
     });
@@ -1330,7 +1350,7 @@ function buildAdvancedTab(tab: HTMLDivElement, context: SettingsContext): void {
 }
 
 function buildConnectionSection(): HTMLDivElement {
-  const connectionSection = makeSection("Connection");
+  const connectionSection = makeSection(t("Connection"));
   const savedCreds = loadCredentials();
 
   const urlInput = document.createElement("input");
@@ -1343,13 +1363,13 @@ function buildConnectionSection(): HTMLDivElement {
   const tokenInput = document.createElement("input");
   tokenInput.type = "password";
   tokenInput.className = "force-search";
-  tokenInput.placeholder = "Long-lived access token";
+  tokenInput.placeholder = t("Long-lived access token");
   tokenInput.value = savedCreds?.token ?? "";
   connectionSection.body.appendChild(tokenInput);
 
   const reconnectBtn = document.createElement("button");
   reconnectBtn.className = "force-reset-btn";
-  reconnectBtn.textContent = "Reconnect";
+  reconnectBtn.textContent = t("Reconnect");
   reconnectBtn.addEventListener("click", () => {
     const url = urlInput.value.trim();
     const token = tokenInput.value.trim();
@@ -1385,7 +1405,7 @@ function makeSelect(label: string, options: string[], initial: string, onChange:
   for (const opt of options) {
     const option = document.createElement("option");
     option.value = opt;
-    option.textContent = opt;
+    option.textContent = optionLabel(opt);
     if (opt === initial) option.selected = true;
     select.appendChild(option);
   }
@@ -1406,7 +1426,7 @@ function makeSegmented(label: string, options: string[], initial: string, onChan
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "force-segmented-btn";
-    btn.textContent = opt;
+    btn.textContent = optionLabel(opt);
     if (opt === initial) btn.classList.add("active");
     btn.addEventListener("click", () => {
       if (btn.classList.contains("active")) return;
@@ -1526,15 +1546,15 @@ async function loadAutomationEdges(): Promise<void> {
     if (id.startsWith("automation.")) automationEntityIds.push(id);
   }
 
-  debugLog("system", `Automation: found ${automationEntityIds.length} automation entities in registry`);
+  debugLog(t("system"), t("Automation: found {n} automation entities in registry", { n: automationEntityIds.length }));
 
   const knownEntityIds = new Set(allEntityTreeNodes.keys());
 
   try {
     automationEdges = await fetchAutomationEdges(haConnection, automationEntityIds, knownEntityIds);
-    debugLog("system", `Automation: fetched ${automationEdges.length} edges`);
+    debugLog(t("system"), t("Automation: fetched {n} edges", { n: automationEdges.length }));
   } catch (err) {
-    debugLog("system", `Automation: fetch failed`, String(err));
+    debugLog(t("system"), t("Automation: fetch failed"), String(err));
     automationEdges = [];
   }
 
@@ -1617,10 +1637,10 @@ function getAutomationTooltipHtml(entityId: string): string {
 
     if (byRelation.size === 0) return "";
 
-    let html = `<br><span style="color:#9e9e9e;font-size:0.7rem">References:</span>`;
+    let html = `<br><span style="color:#9e9e9e;font-size:0.7rem">${t("References:")}</span>`;
     for (const [relation, ids] of byRelation) {
       const colorHex = AUTOMATION_COLORS[relation];
-      html += `<br><span style="color:${colorHex};font-size:0.7rem">${relation}:</span> `;
+      html += `<br><span style="color:${colorHex};font-size:0.7rem">${optionLabel(relation)}：</span> `;
       html += `<span style="color:#bbb;font-size:0.7rem">${ids.join(", ")}</span>`;
     }
     return html;
@@ -1635,14 +1655,14 @@ function getAutomationTooltipHtml(entityId: string): string {
 
   if (byAutomation.size === 0) return "";
 
-  let html = `<br><span style="color:#9e9e9e;font-size:0.7rem">Used by automations:</span>`;
+  let html = `<br><span style="color:#9e9e9e;font-size:0.7rem">${t("Used by automations:")}</span>`;
   for (const [autoId, relations] of byAutomation) {
     const state = currentStates.get(autoId);
     const name = state?.attributes.friendly_name ?? autoId;
     const relLabels = relations.map((r) =>
-      `<span style="color:${AUTOMATION_COLORS[r]}">${r}</span>`
+      `<span style="color:${AUTOMATION_COLORS[r]}">${optionLabel(r)}</span>`
     ).join(", ");
-    html += `<br><span style="font-size:0.7rem">${relLabels} in ${name}</span>`;
+    html += `<br><span style="font-size:0.7rem">${t("{rel} in {name}", { rel: relLabels, name })}</span>`;
   }
   return html;
 }
@@ -1837,11 +1857,22 @@ function buildGraph(root: TreeNode): void {
   rebuildClusters();
 
   if (settings.initialLayout === "tree") {
-    for (let i = 0; i < 150; i++) {
+    // Warm-up is a synchronous block on the main thread, so a fixed tick count
+    // turns into a visible freeze that grows with the instance: 150 ticks cost
+    // ~0.6s at 3.7k nodes, ~4s at 20k and ~14s at 50k. Spend a wall-clock
+    // budget instead, and let the render loop carry on settling afterwards -
+    // alpha is still well above the cutoff, so nothing is left half-baked.
+    const warmupStart = performance.now();
+    for (let i = 0; i < WARMUP_TICKS; i++) {
       simulate();
       alpha *= ALPHA_DECAY;
+      if (performance.now() - warmupStart > WARMUP_BUDGET_MS) break;
     }
   }
+  // The default transform is the identity, which cannot frame a graph that is
+  // wider than the viewport. Arm the fit so resize() frames it once the
+  // container has a real size.
+  pendingFit = true;
 }
 
 function renderScale(): number {
@@ -1860,6 +1891,9 @@ function resize(): void {
   canvas.height = height * dpr;
   // Setting canvas.width clears the bitmap, so repaint even when idle.
   ensureLoop();
+  // Frame the graph only right after it was (re)built, never on an ordinary
+  // window resize - that would throw away the user's pan and zoom.
+  if (pendingFit) fitAll();
 }
 
 function tick(): void {
@@ -1964,6 +1998,59 @@ function quadPush(quad: QuadNode, fn: FNode, depth: number): void {
 
 const BH_THETA = 0.9;
 
+// Set when the graph was rebuilt and the view has not been framed yet.
+let pendingFit = true;
+
+const WARMUP_TICKS = 150;
+// Wall-clock ceiling for the synchronous pre-render warm-up. Small instances
+// never reach it and still get all 150 ticks; large ones stop early instead of
+// freezing the tab, and carry on settling in the render loop - alpha is still
+// far above the cutoff when the budget runs out.
+const WARMUP_BUDGET_MS = 1200;
+
+/** Apply the per-tick step cap in place. */
+function limitStep(n: FNode): void {
+  const v = limitStepVec(n.vx, n.vy);
+  n.vx = v.vx;
+  n.vy = v.vy;
+}
+
+/** Put a node that overflowed to float back on the leash. */
+function rescueNode(n: FNode): void {
+  n.x = width / 2 || 400;
+  n.y = height / 2 || 300;
+  n.vx = 0;
+  n.vy = 0;
+}
+
+
+/** World-space bounding box of every laid-out node. */
+function graphBounds(): { minX: number; minY: number; maxX: number; maxY: number } {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const n of fnodes) {
+    if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
+    if (n.x < minX) minX = n.x;
+    if (n.y < minY) minY = n.y;
+    if (n.x > maxX) maxX = n.x;
+    if (n.y > maxY) maxY = n.y;
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+/** Frame the whole graph. Also the manual recovery path when the view is lost. */
+function fitAll(): void {
+  if (fnodes.length === 0) return;
+  const box = graphBounds();
+  // Stay armed if the fit did not take: a panel that is still 0x0 (not yet
+  // laid out, or hidden) would otherwise consume the pending fit and leave the
+  // view unframed forever.
+  if (!fitTransform(transform, box, width, height)) return;
+  pendingFit = false;
+  updateViewBounds();
+  debugLog(t("system"), t("Fit view: k={k} for {n} nodes", { k: transform.k.toFixed(3), n: fnodes.length }));
+  ensureLoop();
+}
+
 function quadRepulse(quad: QuadNode, fn: FNode, ra: number): void {
   if (quad.count === 0) return;
 
@@ -2037,9 +2124,12 @@ function simulate(): void {
 
   for (const n of fnodes) {
     if (n.fx !== null) { n.x = n.fx; n.vx = 0; }
-    else { n.vx *= settings.damping; n.x += n.vx; }
+    else { n.vx *= settings.damping; limitStep(n); n.x += n.vx; }
     if (n.fy !== null) { n.y = n.fy; n.vy = 0; }
-    else { n.vy *= settings.damping; n.y += n.vy; }
+    else { n.vy *= settings.damping; limitStep(n); n.y += n.vy; }
+    // A node the user is dragging has fx/fy pinned and a zero velocity, so it
+    // can never trip either guard below.
+    if (needsRescue(n.x, n.y)) rescueNode(n);
   }
 }
 
@@ -3220,7 +3310,7 @@ function deviceIdFromNodeId(nodeId: string): string {
 function copyNodeId(node: TreeNode): void {
   const id = nodeActionId(node);
   if (!id) return;
-  navigator.clipboard.writeText(id).then(() => showToast(`Copied: ${id}`));
+  navigator.clipboard.writeText(id).then(() => showToast(t("Copied: {id}", { id })));
 }
 
 function openEntityPage(entityId: string, page: "history" | "logbook"): void {
@@ -3311,7 +3401,7 @@ const SERVICE_ACTIONS: Record<string, ServiceAction[]> = {
 
 async function callEntityService(domain: string, service: string, entityId: string): Promise<void> {
   if (!haConnection) {
-    showToast("Not connected");
+    showToast(t("Not connected"));
     return;
   }
   try {
@@ -3321,13 +3411,13 @@ async function callEntityService(domain: string, service: string, entityId: stri
       service,
       target: { entity_id: entityId },
     });
-    showToast(`${service.replace(/_/g, " ")}: ${entityId}`);
+    showToast(t("Called {service}: {id}", { service: service.replace(/_/g, " "), id: entityId }));
   } catch (err) {
     const msg = err && typeof err === "object" && "message" in err
       ? String((err as { message: unknown }).message)
       : String(err);
-    debugLog("system", `Service call failed: ${domain}.${service}`, msg);
-    showToast(`Failed: ${msg}`);
+    debugLog(t("system"), t("Service call failed: {call}", { call: `${domain}.${service}` }), msg);
+    showToast(t("Failed: {msg}", { msg }));
   }
 }
 
@@ -3398,8 +3488,8 @@ function onContextMenu(e: MouseEvent): void {
     const actions = SERVICE_ACTIONS[node.domain];
     if (actions && haConnection) {
       for (const a of actions) {
-        addItem(a.label, () => {
-          if (a.confirm && !window.confirm(`${a.label}: ${node.entityId}?`)) return;
+        addItem(t(a.label), () => {
+          if (a.confirm && !window.confirm(`${t(a.label)}: ${node.entityId}?`)) return;
           callEntityService(node.domain!, a.service, node.entityId!);
         });
       }
@@ -3407,25 +3497,25 @@ function onContextMenu(e: MouseEvent): void {
     }
   }
 
-  addItem(`Copy ID: ${id}`, () => copyNodeId(node));
+  addItem(t("Copy ID: {id}", { id }), () => copyNodeId(node));
 
   const haBase = getHaUrl();
   if (haBase) {
     if (node.entityId) {
-      addItem("View History", () => openEntityPage(id, "history"));
-      addItem("View Logbook", () => openEntityPage(id, "logbook"));
+      addItem(t("View History"), () => openEntityPage(id, "history"));
+      addItem(t("View Logbook"), () => openEntityPage(id, "logbook"));
     } else if (node.kind === "area") {
-      addItem("Open Area in HA", () => {
+      addItem(t("Open Area in HA"), () => {
         window.open(`${haBase}/config/areas/area/${id}`, "_blank");
       });
     } else if (node.kind === "device") {
-      addItem("Open Device in HA", () => {
+      addItem(t("Open Device in HA"), () => {
         window.open(`${haBase}/config/devices/device/${id}`, "_blank");
       });
-      addItem("View Automations", () => {
+      addItem(t("View Automations"), () => {
         window.open(`${haBase}/config/automation/dashboard?device_id=${id}`, "_blank");
       });
-      addItem("View Logbook", () => {
+      addItem(t("View Logbook"), () => {
         const entityIds = node.children
           .filter((c) => c.entityId)
           .map((c) => c.entityId)
@@ -3441,7 +3531,7 @@ function onContextMenu(e: MouseEvent): void {
 
   if (isCollapsible(node)) {
     const collapsed = collapsedNodes.has(node.id);
-    addItem(collapsed ? "Expand" : "Collapse", () => {
+    addItem(collapsed ? t("Expand") : t("Collapse"), () => {
       toggleCollapse(n);
     });
   }

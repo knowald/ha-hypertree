@@ -5,6 +5,7 @@ import { startSession, showLoading } from "./session";
 import { initDebugConsole, debugLog } from "./debug";
 import type { HaState } from "./ha/types";
 import styles from "./style.css?inline";
+import { t } from "./i18n";
 
 interface HassAuth {
   data: { hassUrl: string };
@@ -36,13 +37,13 @@ class HypertreePanel extends HTMLElement {
     this.container.id = "app";
     const tree = document.createElement("div");
     tree.id = "tree";
-    showLoading(tree, "Loading...");
+    showLoading(tree, t("Loading..."));
     this.container.appendChild(tree);
     shadow.appendChild(this.container);
 
     this.menuButton = document.createElement("button");
     this.menuButton.className = "ha-menu-button";
-    this.menuButton.title = "Menu";
+    this.menuButton.title = t("Menu");
     this.menuButton.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>';
     // Same event HA's own ha-menu-button fires; composed so it leaves the shadow root.
     this.menuButton.addEventListener("click", () => {
@@ -77,7 +78,7 @@ class HypertreePanel extends HTMLElement {
     initDebugConsole();
 
     const haUrl = normalizeUrl(hass.auth.data.hassUrl);
-    debugLog("auth", "Panel connected to " + haUrl);
+    debugLog(t("auth"), t("Panel connected to {url}", { url: haUrl }));
 
     const treeContainer = this.container.querySelector("#tree") as HTMLDivElement;
     for (const [entityId, state] of Object.entries(hass.states ?? {})) {
@@ -96,8 +97,8 @@ class HypertreePanel extends HTMLElement {
       });
       if (teardown) this.teardown = teardown;
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to load";
-      debugLog("system", "Init failed: " + message);
+      const message = err instanceof Error ? err.message : t("Failed to load");
+      debugLog(t("system"), t("Init failed: {msg}", { msg: message }));
       const wrapper = document.createElement("div");
       wrapper.className = "loading";
       const span = document.createElement("span");
